@@ -5,17 +5,15 @@ they don't get silently lost or pulled into the wrong phase.
 
 ## Before Phase 3
 
-- **Verify on real PostgreSQL.** Phase 2 Unit 1 (the DB layer) is so far verified
-  only on in-memory SQLite (full offline test suite) plus an offline render of
-  the Alembic migration as Postgres DDL (`alembic upgrade head --sql`). Before
-  going to the cloud / actually running on PostgreSQL, take one real Postgres
-  instance and run, against it:
-  - `alembic upgrade head` (apply the migration for real), and
-  - the full test suite with `TEST_DATABASE_URL` pointed at a throwaway DB
-    (`pytest tests/test_db.py`), to catch any SQLite↔Postgres dialect gaps.
-  - _Why deferred:_ no local Postgres yet; Phase 2 is a local long-running
-    process. _Revisit:_ at the start of Phase 3 (cloud hosting), before relying
-    on Postgres in anger.
+- **Verify on real PostgreSQL — DONE (2026-06-07).** Ran `alembic upgrade head`
+  against real Postgres 16 (Docker): schema correct (uuid / jsonb / timestamptz /
+  CHECK / FK ON DELETE CASCADE / indexes). Ran the full suite against a throwaway
+  DB via `TEST_DATABASE_URL`: 61 passed. This caught and fixed a real dialect gap
+  — a malformed (non-UUID) id raised a psycopg `DataError` on the native `uuid`
+  column instead of a clean not-found (fixed by validating ids at the data-layer
+  boundary). Remaining real-env check is the **live end-to-end** (`cli.py
+  run-once` with a real Claude subscription + real SMTP), which is the user's to
+  run on their machine.
 
 ## Phase 3 refactor
 
