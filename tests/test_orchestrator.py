@@ -10,6 +10,7 @@ import logging
 
 import pytest
 
+import orchestrator
 from agent import AgentContractError, Critique, CritiqueIssue, Digest, DigestItem
 from fetch import FeedItem
 from orchestrator import build_digest
@@ -138,3 +139,10 @@ def test_empty_items_short_circuits():
     out = build_digest([], 2, "m", summarize_fn=s, verify_fn=v)
     assert out == Digest(items=[])
     assert s.calls == [] and v.calls == []
+
+
+def test_engine_is_a_compiled_langgraph_with_expected_nodes():
+    # The control flow is genuinely a compiled LangGraph StateGraph (Unit 2), not
+    # a hand-rolled loop pretending to be one.
+    nodes = set(orchestrator._APP.get_graph().nodes)
+    assert {"summarize", "verify", "accept_last"} <= nodes
