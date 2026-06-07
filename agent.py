@@ -4,9 +4,10 @@ Contract (Phase 1 brief §4):
     input  = list of FeedItems
     output = a structured Digest: top N items, each {title, link, one_line_summary}
 
-This is the only module that talks to Claude. It runs a single-turn, tool-less
-query: the agent receives the items as JSON and returns a JSON array of
-summaries. No tools are granted, so the run is deterministic and non-interactive.
+The actual model call lives in the `llm.complete` seam (the only module that
+imports the SDK); this module builds prompts and validates replies against their
+contracts. `summarize` receives the items as JSON and returns a JSON array of
+summaries; no tools are granted, so the run is deterministic and non-interactive.
 
 Auth: the SDK delegates to the Claude Code CLI, which uses your subscription.
 Do NOT set ANTHROPIC_API_KEY (that would bill the paid API).
@@ -17,16 +18,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-import anyio
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ResultMessage,
-    TextBlock,
-    query,
-)
-
 from fetch import FeedItem
+from llm import complete
 
 
 @dataclass(frozen=True)
@@ -64,45 +57,6 @@ def _build_prompt(items: list[FeedItem], n: int) -> str:
     )
 
 
-async def _run_query(prompt: str, model: str) -> str:
-    options = ClaudeAgentOptions(
-        system_prompt=SYSTEM_PROMPT,
-        model=model,
-        # `tools=[]` makes NO tools available (CLI: --tools "") so the agent can
-        # only reply with text. NOTE: `allowed_tools` is just a permission
-        # allow-list, not the available set — it does NOT disable tools.
-        tools=[],
-        permission_mode="bypassPermissions",  # belt-and-suspenders; nothing to permit
-        max_turns=3,  # headroom; with no tools the model ends in one turn
-        setting_sources=[],  # ignore project/user settings for a clean run
-    )
-
-    text_chunks: list[str] = []
-    result_text: str | None = None
-    error: str | None = None
-    # ResultMessage is the terminal message, so let the generator finish
-    # naturally; capture errors and raise after the loop rather than mid-
-    # iteration (raising inside `async for` aborts the generator mid-run).
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    text_chunks.append(block.text)
-        elif isinstance(message, ResultMessage):
-            if message.is_error:
-                error = str(message.result or message.errors)
-            else:
-                result_text = message.result
-
-    if error is not None:
-        raise RuntimeError(f"Agent run failed: {error}")
-
-    text = (result_text or "".join(text_chunks)).strip()
-    if not text:
-        raise RuntimeError("Agent returned no text.")
-    return text
-
-
 def _parse_json_array(text: str) -> list[dict]:
     """Extract a JSON array of objects from the agent's reply.
 
@@ -127,15 +81,8 @@ def summarize(items: list[FeedItem], n: int, model: str) -> Digest:
         return Digest(items=[])
 
     prompt = _build_prompt(items, n)
-    try:
-        raw = anyio.run(_run_query, prompt, model)
-    except Exception as exc:  # surface a clear, actionable message
-        raise RuntimeError(
-            f"Agent summarization failed: {exc}\n"
-            "If this is an auth error (e.g. 'Not logged in'), authenticate the "
-            "Claude Code CLI with your subscription: run `claude`, then /login. "
-            "Do NOT set ANTHROPIC_API_KEY (that bills the paid API)."
-        ) from exc
+    # The model call (and its auth-remediation guidance) lives in the llm seam.
+    raw = complete(prompt, system_prompt=SYSTEM_PROMPT, model=model)
 
     try:
         data = _parse_json_array(raw)
