@@ -3,6 +3,12 @@ feedparser          # RSS fetching/parsing (deterministic, no agent)
 claude-agent-sdk==0.2.93  # Claude Agent SDK — pinned: an SDK upgrade once broke tools=[] (Phase 1 lesson)
 python-dotenv       # load configuration from .env
 
+# Phase 5 — orchestration engine. The digest orchestrator (summarize→verify→redo)
+# runs as a LangGraph StateGraph. WORKER-ONLY: the web tier never imports it (a
+# test enforces no langgraph in the web process, same as the Agent SDK guard).
+# LangGraph nodes call the model ONLY via llm.py — never the SDK directly.
+langgraph>=1.0,<2   # tested with 1.2.4 (Unit 3 will add langgraph-checkpoint-postgres)
+
 # Phase 2 — database (Unit 1). Runtime uses PostgreSQL; offline tests use SQLite.
 SQLAlchemy>=2.0,<3       # Core query builder + portable schema
 alembic>=1.13,<2         # schema migrations (applied to PostgreSQL)
