@@ -26,3 +26,14 @@ they don't get silently lost or pulled into the wrong phase.
     mid-build for no functional gain. Do it once, deliberately, as part of the
     Phase 3 backend restructure (e.g. a `backend/` package layout).
   - _Revisit:_ Phase 3, alongside introducing the FastAPI control plane.
+
+## Monitoring / observability
+
+- **Email delivery is a blind spot.** A failed email is only logged and the Run
+  still shows `success` (the digest is saved — graceful degradation by design,
+  Units 2/3). Nothing records whether delivery actually happened. When delivery
+  confirmation matters, persist a delivery status onto the Run (or a future
+  Event row) so `success` reflects end-to-end delivery, not just that the digest
+  was produced.
+  - _Revisit:_ when email reliability becomes operationally important (after
+    Unit 3, before relying on the push in anger).
