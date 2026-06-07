@@ -68,9 +68,12 @@ async def _run_query(prompt: str, model: str) -> str:
     options = ClaudeAgentOptions(
         system_prompt=SYSTEM_PROMPT,
         model=model,
-        allowed_tools=[],  # pure text summarization — grant no tools
-        permission_mode="bypassPermissions",  # nothing to permit; stay non-interactive
-        max_turns=1,
+        # `tools=[]` makes NO tools available (CLI: --tools "") so the agent can
+        # only reply with text. NOTE: `allowed_tools` is just a permission
+        # allow-list, not the available set — it does NOT disable tools.
+        tools=[],
+        permission_mode="bypassPermissions",  # belt-and-suspenders; nothing to permit
+        max_turns=3,  # headroom; with no tools the model ends in one turn
         setting_sources=[],  # ignore project/user settings for a clean run
     )
 
