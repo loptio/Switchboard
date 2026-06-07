@@ -8,5 +8,8 @@ SQLAlchemy>=2.0,<3       # Core query builder + portable schema
 alembic>=1.13,<2         # schema migrations (applied to PostgreSQL)
 psycopg[binary]>=3.1,<4  # PostgreSQL driver (runtime only)
 
+# Phase 2 — scheduler (Unit 2). In-process cron heartbeat.
+APScheduler>=3.10,<4     # triggers the runner on schedule
+
 # Dev / test
 pytest              # fetch-module test
