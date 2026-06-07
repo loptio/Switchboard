@@ -195,6 +195,36 @@ def test_from_dict_tolerates_missing_keys():
     )
 
 
+def test_build_digest_through_real_agents_with_fake_llm():
+    # Integration: drive the dict-state graph through the ACTUAL summarize_agent /
+    # verify_agent (only the model call is faked), proving the node-boundary
+    # dataclass↔dict conversions compose with the real agents end-to-end.
+    import json
+
+    from agent import summarize_agent, verify_agent
+
+    src = [FeedItem("Real Title", "https://e/r", "the body", "p")]
+    summ_reply = json.dumps([{"one_line_summary": "a faithful summary"}])
+
+    def fake_llm_summarize(prompt, *, system_prompt, model):
+        return summ_reply
+
+    def fake_llm_verify(prompt, *, system_prompt, model):
+        return '{"passed": true, "issues": []}'
+
+    def s(items, n, model, feedback=None):
+        return summarize_agent(items, n, model, feedback=feedback, llm=fake_llm_summarize)
+
+    def v(digest, items, model):
+        return verify_agent(digest, items, model, llm=fake_llm_verify)
+
+    out = build_digest(src, 1, "m", summarize_fn=s, verify_fn=v)
+    assert len(out.items) == 1
+    assert out.items[0].title == "Real Title"  # title/link repaired from source
+    assert out.items[0].link == "https://e/r"
+    assert out.items[0].one_line_summary == "a faithful summary"
+
+
 def test_inconclusive_after_a_real_failure_degrades_not_fakes_pass(caplog):
     # "Never fake a pass" on its dangerous path: a REAL failing critique, redo,
     # then the verifier goes malformed → accept the CURRENT (post-redo) digest as
