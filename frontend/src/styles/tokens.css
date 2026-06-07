@@ -1,0 +1,40 @@
+/* Design tokens — one place for colors, spacing, radius, type. Kept small and
+   calm: a clean admin panel, not a flashy site. Components reference these vars
+   so buttons/forms/cards/badges stay visually consistent. */
+:root {
+  --color-bg: #f5f6f8;
+  --color-surface: #ffffff;
+  --color-border: #e4e7eb;
+  --color-text: #1b2027;
+  --color-text-muted: #6b7280;
+  --color-primary: #2563eb;
+  --color-primary-hover: #1d4ed8;
+  --color-primary-contrast: #ffffff;
+  --color-danger: #dc2626;
+  --color-danger-hover: #b91c1c;
+
+  /* Run status — distinct hue + soft background for at-a-glance badges. */
+  --status-pending: #92580a;
+  --status-pending-bg: #fef3c7;
+  --status-running: #1d4ed8;
+  --status-running-bg: #dbeafe;
+  --status-success: #15803d;
+  --status-success-bg: #dcfce7;
+  --status-failed: #b91c1c;
+  --status-failed-bg: #fee2e2;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  --radius: 8px;
+  --radius-sm: 6px;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.08);
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
