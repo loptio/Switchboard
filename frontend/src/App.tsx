@@ -4,6 +4,7 @@ import { AuthProvider } from "./auth/AuthContext";
 import { LoginPage } from "./auth/LoginPage";
 import { RequireAuth } from "./auth/RequireAuth";
 import { Layout } from "./components/Layout";
+import { RunDetail } from "./runs/RunDetail";
 import { RunsDashboard } from "./runs/RunsDashboard";
 
 // Placeholder until the real page lands in a later commit.
@@ -19,6 +20,7 @@ export default function App() {
         <Route element={<RequireAuth />}>
           <Route element={<Layout />}>
             <Route path="/" element={<RunsDashboard />} />
+            <Route path="/runs/:id" element={<RunDetail />} />
             <Route path="/schedules" element={<Placeholder title="Schedules" />} />
           </Route>
         </Route>
