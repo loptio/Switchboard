@@ -104,11 +104,21 @@ async def _run_query(prompt: str, model: str) -> str:
 
 
 def _parse_json_array(text: str) -> list[dict]:
-    """Extract the JSON array from the agent's reply, tolerating stray fences."""
+    """Extract a JSON array of objects from the agent's reply.
+
+    Tolerates stray prose or code fences around the array, and validates the
+    shape so a malformed reply fails with a clear message instead of an opaque
+    AttributeError later.
+    """
     start, end = text.find("["), text.rfind("]")
     if start == -1 or end == -1 or end < start:
         raise ValueError(f"No JSON array in agent output: {text[:200]!r}")
-    return json.loads(text[start : end + 1])
+    data = json.loads(text[start : end + 1])
+    if not isinstance(data, list) or not all(isinstance(obj, dict) for obj in data):
+        raise ValueError(
+            f"Agent output is not a JSON array of objects: {text[:200]!r}"
+        )
+    return data
 
 
 def summarize(items: list[FeedItem], n: int, model: str) -> Digest:
@@ -126,7 +136,13 @@ def summarize(items: list[FeedItem], n: int, model: str) -> Digest:
             "Claude Code CLI with your subscription: run `claude`, then /login. "
             "Do NOT set ANTHROPIC_API_KEY (that bills the paid API)."
         ) from exc
-    data = _parse_json_array(raw)
+
+    try:
+        data = _parse_json_array(raw)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Could not parse the agent's response as a JSON array: {exc}"
+        ) from exc
 
     digest_items = [
         DigestItem(
