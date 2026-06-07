@@ -97,3 +97,16 @@ schedules = Table(
     Column("created_at", _TS, nullable=False),
 )
 Index("ix_schedules_enabled_next_run", schedules.c.enabled, schedules.c.next_run_at)
+
+# A User = the single login account for the control-plane API (Phase 3, Unit 1).
+# Single-user by design: no roles. Passwords are bcrypt-hashed in the API layer
+# (passlib) before they ever reach here — only the hash is stored.
+users = Table(
+    "users",
+    metadata,
+    Column("id", _UUID, primary_key=True),
+    Column("username", Text, nullable=False),
+    Column("password_hash", Text, nullable=False),
+    Column("created_at", _TS, nullable=False),
+)
+Index("ix_users_username", users.c.username, unique=True)  # unique + fast lookup

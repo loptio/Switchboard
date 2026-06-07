@@ -11,8 +11,11 @@ from __future__ import annotations
 from .dao import (
     create_run,
     create_schedule,
+    create_user,
     get_run,
     get_schedule,
+    get_user,
+    get_user_by_username,
     list_due_schedules,
     list_enabled_schedules,
     list_outputs,
@@ -24,17 +27,19 @@ from .dao import (
     mark_success,
     save_output,
     set_schedule_enabled,
+    set_user_password,
     update_run_status,
 )
 from .engine import configure, drop_db, get_engine, init_db
 from .models import RUN_STATUSES, RUN_TRIGGERS, metadata
-from .records import Output, Run, Schedule
+from .records import Output, Run, Schedule, User
 
 __all__ = [
     # records
     "Run",
     "Output",
     "Schedule",
+    "User",
     # runs
     "create_run",
     "update_run_status",
@@ -54,6 +59,11 @@ __all__ = [
     "list_due_schedules",
     "set_schedule_enabled",
     "mark_schedule_ran",
+    # users
+    "create_user",
+    "get_user",
+    "get_user_by_username",
+    "set_user_password",
     # infrastructure / schema
     "configure",
     "get_engine",

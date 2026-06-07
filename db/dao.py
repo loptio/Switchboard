@@ -23,10 +23,11 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from sqlalchemy import or_, select, update
+from sqlalchemy.exc import IntegrityError
 
 from .engine import get_engine
-from .models import RUN_STATUSES, RUN_TRIGGERS, outputs, runs, schedules
-from .records import Output, Run, Schedule
+from .models import RUN_STATUSES, RUN_TRIGGERS, outputs, runs, schedules, users
+from .records import Output, Run, Schedule, User
 
 # Sentinel for "argument not supplied" where None is a meaningful value.
 _UNSET = object()
@@ -366,3 +367,66 @@ def list_due_schedules(now: datetime) -> list[Schedule]:
             .all()
         )
     return [Schedule.from_row(r) for r in rows]
+
+
+# --- Users ----------------------------------------------------------------
+# The control-plane API (Phase 3) authenticates against these. Only the bcrypt
+# hash is stored; hashing/verification happens in the API layer, never here.
+
+def create_user(
+    username: str, password_hash: str, *, now: datetime | None = None
+) -> User:
+    """Create the login user. Raises ValueError if the username already exists."""
+    uid = _new_id()
+    created = _to_utc(now) if now is not None else _now()
+    try:
+        with get_engine().begin() as conn:
+            conn.execute(
+                users.insert().values(
+                    id=uid,
+                    username=username,
+                    password_hash=password_hash,
+                    created_at=created,
+                )
+            )
+    except IntegrityError as exc:
+        raise ValueError(f"user {username!r} already exists") from exc
+    return User(
+        id=uid, username=username, password_hash=password_hash, created_at=created
+    )
+
+
+def get_user(user_id: str) -> User | None:
+    if not _is_uuid(user_id):
+        return None
+    with get_engine().connect() as conn:
+        row = conn.execute(select(users).where(users.c.id == user_id)).mappings().first()
+    return User.from_row(row) if row else None
+
+
+def get_user_by_username(username: str) -> User | None:
+    with get_engine().connect() as conn:
+        row = (
+            conn.execute(select(users).where(users.c.username == username))
+            .mappings()
+            .first()
+        )
+    return User.from_row(row) if row else None
+
+
+def set_user_password(username: str, password_hash: str) -> User:
+    """Update an existing user's password hash. Raises LookupError if missing."""
+    with get_engine().begin() as conn:
+        result = conn.execute(
+            update(users)
+            .where(users.c.username == username)
+            .values(password_hash=password_hash)
+        )
+        if result.rowcount == 0:
+            raise LookupError(f"No user named {username!r}")
+        row = (
+            conn.execute(select(users).where(users.c.username == username))
+            .mappings()
+            .one()
+        )
+    return User.from_row(row)

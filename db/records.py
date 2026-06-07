@@ -73,6 +73,23 @@ class Output:
 
 
 @dataclass(frozen=True)
+class User:
+    id: str
+    username: str
+    password_hash: str
+    created_at: datetime
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any]) -> "User":
+        return cls(
+            id=str(row["id"]),
+            username=row["username"],
+            password_hash=row["password_hash"],
+            created_at=_utc(row["created_at"]),
+        )
+
+
+@dataclass(frozen=True)
 class Schedule:
     id: str
     workflow: str
