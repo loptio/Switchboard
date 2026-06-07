@@ -387,6 +387,66 @@ web app must **not** import the Agent SDK.
   SQLite via `metadata.create_all`. Run `alembic upgrade head` against real
   Postgres in your deploy/review environment.
 
+## Phase 3 — Frontend (Unit 2)
+
+A minimal, responsive **React control-plane UI** under [`frontend/`](frontend/)
+that consumes the Unit 1 API over HTTP — it never touches backend code. Vite +
+React + TypeScript; plain CSS Modules (no heavy component library).
+
+**Pages:** login; a **runs dashboard** (recent runs with status badges, a **Run
+now** button, and live status polling); **run detail** (the digest rendered as
+markdown); and **schedules** (list / create / enable·disable / edit cron·tz /
+delete).
+
+### How it connects (cookies + CSRF)
+
+The Vite dev server **proxies `/api` to the API** (`http://localhost:8000`), so
+the browser only sees one origin and the session + `csrftoken` cookies are
+same-origin — no CORS needed in dev. A single `apiFetch` wrapper sends
+`credentials:"include"` on every call, echoes the `csrftoken` cookie in the
+`X-CSRF-Token` header on writes, sends 401s back to the login page, and refreshes
+the CSRF token via `/auth/me` and retries once on a 403.
+
+### Run it (needs the API + worker running)
+
+```bash
+# 1. Backend API (terminal 1) and worker (terminal 2), per "Phase 3 — Unit 1":
+uvicorn api.app:app                 # the API on :8000
+python cli.py scheduler             # the worker — required for triggers to execute
+#    (and create a login user once: python cli.py create-user --username admin)
+
+# 2. Frontend (terminal 3):
+cd frontend
+npm install
+cp .env.example .env                # defaults are fine for local
+npm run dev                         # http://localhost:5173
+```
+
+Open http://localhost:5173, sign in, and click **Run now** — a pending run
+appears and the dashboard polls until the worker finishes it (status → success),
+then the digest is viewable. If a run stays pending for ~90s, the UI hints that
+the worker may not be running.
+
+### Config (Vite env)
+
+| Variable          | Default                 | Meaning                                            |
+| ----------------- | ----------------------- | -------------------------------------------------- |
+| `VITE_API_BASE`   | `/api`                  | API base path (dev: proxied; prod: the API origin) |
+| `VITE_API_TARGET` | `http://localhost:8000` | where `npm run dev` proxies `/api`                 |
+
+For a deployed build, set `VITE_API_BASE` to the API's real origin (cross-origin;
+the backend's `CORS_ALLOW_ORIGINS` must list the frontend origin).
+
+### Tests / build
+
+```bash
+cd frontend
+npm test            # Vitest + React Testing Library (offline; fetch mocked)
+npm run build       # type-check + production build
+```
+
+The frontend does not touch the backend; the backend's test suite is unaffected.
+
 ## Project docs & backlog
 
 System design and phase plans live in [`docs/`](docs/):
