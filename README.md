@@ -86,8 +86,20 @@ A format example is checked in at [`output/sample-digest.md`](output/sample-dige
 
 ## Test
 
-The fetch module has a basic offline test (parses a sample feed into items):
+Offline tests (no network, no agent/API): the fetch module parses a sample feed
+into items, plus robustness helpers (config parsing, agent JSON validation,
+markdown sanitization).
 
 ```bash
 .venv/bin/python -m pytest
 ```
+
+## Known limitations (Phase 1)
+
+Intentionally minimal per the Phase 1 scope:
+- One feed, run on demand — no scheduling, storage, or notifications.
+- Item titles/summaries are sanitized for whitespace/newlines and bold, but not
+  fully Markdown-escaped (public feeds rarely need it; over-escaping hurts
+  readability of titles like `Show HN: foo [pdf]`).
+- If the agent returns fewer items than requested, the digest reflects what was
+  returned (graceful) rather than failing the whole run.
