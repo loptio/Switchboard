@@ -1,0 +1,123 @@
+.title {
+  margin: 0 0 var(--space-4);
+  font-size: 20px;
+}
+
+.formCard {
+  margin-bottom: var(--space-5);
+}
+.formTitle {
+  font-size: 15px;
+  margin: 0 0 var(--space-3);
+}
+.form {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr auto;
+  gap: var(--space-3);
+  align-items: end;
+}
+
+.center {
+  display: grid;
+  place-items: center;
+  padding: var(--space-8);
+}
+.empty {
+  text-align: center;
+  color: var(--color-text-muted);
+  padding: var(--space-8);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 150px 90px 90px 1fr auto;
+  grid-template-areas: "cron tz state next actions";
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+.rowEditing {
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    "fields fields"
+    "actions actions";
+}
+
+.cron {
+  grid-area: cron;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.tz {
+  grid-area: tz;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+.next {
+  grid-area: next;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+.editFields {
+  grid-area: fields;
+  display: flex;
+  gap: var(--space-3);
+}
+.actions {
+  grid-area: actions;
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+.on,
+.off {
+  grid-area: state;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  text-align: center;
+}
+.on {
+  color: var(--status-success);
+  background: var(--status-success-bg);
+}
+.off {
+  color: var(--color-text-muted);
+  background: var(--color-bg);
+}
+
+/* The error banner spans the row when present. */
+.row > :global(div[role="alert"]) {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 640px) {
+  .form {
+    grid-template-columns: 1fr;
+  }
+  .row {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "cron state"
+      "tz next"
+      "actions actions";
+  }
+  .actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+}

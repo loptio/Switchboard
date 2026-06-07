@@ -6,11 +6,7 @@ import { RequireAuth } from "./auth/RequireAuth";
 import { Layout } from "./components/Layout";
 import { RunDetail } from "./runs/RunDetail";
 import { RunsDashboard } from "./runs/RunsDashboard";
-
-// Placeholder until the real page lands in a later commit.
-function Placeholder({ title }: { title: string }) {
-  return <p>{title} — coming next.</p>;
-}
+import { SchedulesPage } from "./schedules/SchedulesPage";
 
 export default function App() {
   return (
@@ -21,7 +17,7 @@ export default function App() {
           <Route element={<Layout />}>
             <Route path="/" element={<RunsDashboard />} />
             <Route path="/runs/:id" element={<RunDetail />} />
-            <Route path="/schedules" element={<Placeholder title="Schedules" />} />
+            <Route path="/schedules" element={<SchedulesPage />} />
           </Route>
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
