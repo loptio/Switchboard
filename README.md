@@ -5,9 +5,9 @@ local markdown digest and print it to the console.
 
 This began as **Phase 1** of a larger agent system: a single, sequential
 vertical slice (no database, scheduling, notifications, or web UI). **Phase 2 is
-now in progress** — the data layer below (Unit 1) adds a PostgreSQL source of
-truth. Scheduling, notifications, web UI, and multi-provider models remain later
-phases by design.
+now in progress** — the data layer (Unit 1) adds a PostgreSQL source of truth
+and the scheduler/runner (Unit 2) runs the workflow on schedule. Email delivery
+(Unit 3), web UI, and multi-provider models are still upcoming.
 
 ## How it works
 
@@ -173,6 +173,59 @@ export TEST_DATABASE_URL='postgresql+psycopg://user:password@localhost:5432/agen
 - Timestamps are stored and returned as UTC. SQLite drops timezones, so the
   layer normalizes every datetime to UTC before writing/comparing — pass
   timezone-aware UTC datetimes.
+
+## Phase 2 — Scheduler & runner (Unit 2)
+
+Unit 2 adds the **runner** (one full run of the workflow through the data layer)
+and an **APScheduler** heartbeat that fires it on schedule. Email is a stubbed
+call point until Unit 3 — a successful run currently just logs "email not wired
+yet".
+
+```
+fetch → summarize → render → write local file (Phase 1, kept)
+                          → save Output + record Run (data layer)
+                          → send_digest(...)   ← Unit 3 implements SMTP
+```
+
+- A run records a `Run` (pending → running → success/failed) and saves the digest
+  as an `Output`. Pipeline failures are recorded as `failed` rather than crashing.
+  The Phase 1 local markdown file is still written.
+- The scheduler ticks every 60s and runs schedules whose `next_run_at` has
+  arrived, then advances `next_run_at` to the next cron fire. The DB is the
+  source of truth — add/remove schedules without restarting.
+
+### Operator CLI (thin wiring)
+
+```bash
+.venv/bin/python cli.py run-once                          # run now (manual trigger)
+.venv/bin/python cli.py add-schedule --cron "0 6 * * *"   # daily 06:00 UTC (--tz to change)
+.venv/bin/python cli.py list-schedules
+.venv/bin/python cli.py list-runs
+.venv/bin/python cli.py scheduler                         # start the long-running heartbeat
+```
+
+`run-once` and `scheduler` need `DATABASE_URL` set and the agent authenticated
+(Phase 1 — subscription, never `ANTHROPIC_API_KEY`).
+
+### Running on a schedule (always-on)
+
+`cli.py scheduler` is a **long-running local process**: your computer must stay
+on (and awake) for scheduled runs to fire. That's expected for Phase 2 — cloud
+hosting is Phase 3. If the process is off across one or more scheduled times, it
+**catches up exactly once** on restart and advances to the next future fire (you
+get one digest, not a backlog of N).
+
+### Tests
+
+Still fully offline — the Phase 1 pipeline, the clock, and SMTP are all
+mocked/injected, so the scheduler is tested with mock time and never waits:
+
+```bash
+.venv/bin/python -m pytest
+```
+
+A pinned-SDK smoke test (`tests/test_sdk_smoke.py`) guards the `tools=[]`
+one-shot contract against an accidental SDK upgrade (the Phase 1 regression).
 
 ## Project docs & backlog
 
