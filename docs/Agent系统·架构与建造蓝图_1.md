@@ -192,15 +192,16 @@
 | subagent、orchestrator、契约测试 | 多 agent 编排(粘合剂) |
 
 ---
+## 附录 · 决策记录(随建造过程拍板)
 
-## 附录 · 待你拍板的决策点(阶段 0/2 的判断,留给你)
+| # | 决策 | 结论 | 备注 |
+|---|---|---|---|
+| 1 | 调度器 | APScheduler 轮询心跳(60s)+ DB pending-run 认领 | DB 驱动、动态生效;手动触发经 pending-run 交给 worker;未上重型任务队列 |
+| 2 | 通知渠道 | 邮件(SMTP) | 未配置静默跳过、失败优雅降级;不做 Telegram |
+| 3 | 认证 | 自托管:passlib/bcrypt + SessionMiddleware 签名会话 cookie + CSRF token | 单用户;未用 fastapi-users(更轻) |
+| 4 | 托管 | **待定** | 本地优先;到上云那步再定 VPS vs PaaS |
+| 5 | 新闻源 + 解析 | RSS(目前 Hacker News) | 产出契约 = 结构化 Digest(title / link / one_line_summary) |
+| 6 | pgvector 长期记忆 | 推迟 | 非 Phase 2;待长期记忆需求出现再引入 |
+| 7 | 前端最小范围 | 登录 + 运行看板 + 运行详情/产出 + 排程 CRUD + 立即跑;响应式 | 见 Phase 3 Unit 2 简报 |
 
-1. 调度器:简单 **cron** 起步,还是直接上**任务队列**(为将来并行)?
-2. 通知渠道:**邮件**?**Telegram bot**?还是都要?
-3. 认证:**自托管库(fastapi-users 等)** 还是 **托管服务(省事)**?
-4. 托管:自管 **VPS** 还是**托管云平台**?
-5. 新闻来源 + 解析方式:RSS?网页抓取?各源的契约是什么?
-6. 何时引入 **pgvector** 长期记忆(Phase 2 还是更后)?
-7. 前端最小可用范围:Phase 3 先做哪几个页面(状态列表 + 产出查看 + 排程)?
-
-> 这些是你作为 orchestrator 要做的判断;定了之后回填进第 4–8 节,这份文档就能直接发给 build session 当总图。
+> 除第 4 项外均已落地。细节以代码 + 各阶段简报为准(本表只记"定了什么")。
