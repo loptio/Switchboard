@@ -1,0 +1,25 @@
+.badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pending {
+  color: var(--status-pending);
+  background: var(--status-pending-bg);
+}
+.running {
+  color: var(--status-running);
+  background: var(--status-running-bg);
+}
+.success {
+  color: var(--status-success);
+  background: var(--status-success-bg);
+}
+.failed {
+  color: var(--status-failed);
+  background: var(--status-failed-bg);
+}

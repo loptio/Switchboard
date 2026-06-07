@@ -18,7 +18,10 @@ import { getMe, login } from "../api/endpoints";
 
 function renderLogin() {
   return render(
-    <MemoryRouter initialEntries={["/login"]}>
+    <MemoryRouter
+      initialEntries={["/login"]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
       <AuthProvider>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
