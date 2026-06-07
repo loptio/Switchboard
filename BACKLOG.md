@@ -35,3 +35,11 @@ they don't get silently lost or pulled into the wrong phase.
   was produced.
   - _Revisit:_ when email reliability becomes operationally important (after
     Unit 3, before relying on the push in anger).
+
+- **Digest quality is logged but not persisted.** The orchestrator's review
+  verdict (passed / accepted-at-cap-with-open-issues / verification-inconclusive)
+  only goes to the run log (Phase 5 Unit 1). Persist it onto the Run (or a future
+  Event row) so the control-plane UI can surface digest *quality*, not just
+  success/failed.
+  - _Revisit:_ the monitoring/observability unit (same place as the email
+    delivery-status item above).
