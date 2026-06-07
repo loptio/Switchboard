@@ -16,10 +16,10 @@ import logging
 from datetime import datetime, timezone
 
 from apscheduler.schedulers.blocking import BlockingScheduler
-from apscheduler.triggers.cron import CronTrigger
 
 import db
 import runner
+from cronutil import compute_next_run  # SDK-free cron math, shared with the API
 
 log = logging.getLogger(__name__)
 
@@ -28,17 +28,6 @@ TICK_SECONDS = 60  # heartbeat granularity; fine for cron down to the minute
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def compute_next_run(cron: str, tz: str, after: datetime) -> datetime:
-    """Next time `cron` (read in timezone `tz`) fires STRICTLY AFTER `after`, in UTC.
-
-    Passing previous_fire_time=after forces 'strictly after', so a fire exactly
-    at the boundary instant is not returned again (no double-run at, e.g., 06:00).
-    """
-    trigger = CronTrigger.from_crontab(cron, timezone=tz)
-    nxt = trigger.get_next_fire_time(after, after)
-    return nxt.astimezone(timezone.utc)
 
 
 def add_schedule(
