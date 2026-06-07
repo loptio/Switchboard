@@ -7,7 +7,11 @@ python-dotenv       # load configuration from .env
 # runs as a LangGraph StateGraph. WORKER-ONLY: the web tier never imports it (a
 # test enforces no langgraph in the web process, same as the Agent SDK guard).
 # LangGraph nodes call the model ONLY via llm.py — never the SDK directly.
-langgraph>=1.0,<2   # tested with 1.2.4 (Unit 3 will add langgraph-checkpoint-postgres)
+langgraph>=1.0,<2   # tested with 1.2.4
+# Phase 5 Unit 3 — human-in-the-loop suspend/resume. PostgresSaver checkpointer
+# (graph execution state) lives in the SAME Postgres as `runs`, different tables,
+# no FK — correlated by thread_id == run_id. setup() is run once as a migration.
+langgraph-checkpoint-postgres>=3,<4  # tested with 3.1.0 (worker-only; lazy-imported)
 
 # Phase 2 — database (Unit 1). Runtime uses PostgreSQL; offline tests use SQLite.
 SQLAlchemy>=2.0,<3       # Core query builder + portable schema
