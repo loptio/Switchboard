@@ -1,12 +1,12 @@
 """Orchestrator — the deterministic control flow that coordinates the agents.
 
-This is plain, deterministic control flow, NOT an LLM deciding the flow (that
-meta-agent is a later phase). It is implemented as a **LangGraph `StateGraph`**
-(Phase 5 Unit 2): the engine is borrowed (graph plumbing), the system — agent
-composition, contracts, the bounded-redo policy — is ours. `build_digest`
-replaces the single `summarize` call in the runner: it drives a bounded
-summarize → verify → redo loop and returns the SAME Digest contract, so the rest
-of the pipeline (render / store / email) is untouched.
+Plain, deterministic control flow, NOT an LLM deciding the flow (that meta-agent
+is a later phase). Implemented as a **LangGraph `StateGraph`** (Phase 5 Unit 2):
+the engine is borrowed (graph plumbing), the system — agent composition,
+contracts, the bounded-redo policy — is ours. `build_digest` replaces the single
+`summarize` call in the runner: a bounded summarize → verify → redo loop that
+returns the SAME Digest contract, so the rest of the pipeline (render / store /
+email) is untouched.
 
 Graph (nodes + conditional edges):
     START → summarize → verify against the source
@@ -17,22 +17,30 @@ Graph (nodes + conditional edges):
       verifier malformed (after a bounded re-verify) → accept current + log
       summarizer never produced a valid digest → raise (run fails; no dirty data)
 
-Every agent call costs SDK budget, so everything here is bounded: at most
-(max_redos+1) summarizer calls and at most (max_redos+1)×MAX_VERIFY_ATTEMPTS
-verifier calls. No path loops forever or ships schema-dirty data.
+Everything is bounded: at most (max_redos+1) summarizer calls and at most
+(max_redos+1)×MAX_VERIFY_ATTEMPTS verifier calls. No path loops forever or ships
+schema-dirty data.
 
-The agents are injected (summarize_fn / verify_fn) with the real agents as
-defaults — passed through LangGraph's per-invoke `config["configurable"]` so the
-model can be swapped and tests can inject fakes without touching this control
-flow. Callables are kept OUT of the graph state (state must stay serializable for
-the Unit 3 checkpointer). LangGraph nodes reach the model ONLY via the injected
-agents (i.e. llm.py) — never the SDK directly.
+**State is JSON-native (dict-state), NOT dataclasses** (Phase 5 Unit 3): the
+checkpointer (human-in-the-loop suspend/resume) serializes the state, and
+LangGraph's serializer only round-trips arbitrary dataclasses via a deprecated,
+schema-brittle path. So the graph state holds plain dicts/lists/primitives;
+nodes convert to/from the FeedItem/Digest/Critique dataclasses at their
+boundaries. The PUBLIC contract is unchanged: `build_digest` takes FeedItems and
+returns a Digest, and the injected agents still speak dataclasses.
+
+The agents are injected (summarize_fn / verify_fn) via LangGraph's per-invoke
+`config["configurable"]` so the model can be swapped and tests can inject fakes
+without touching this control flow. Callables are kept OUT of the state (it must
+serialize). Nodes reach the model ONLY via the injected agents (i.e. llm.py) —
+never the SDK directly.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import asdict
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -42,6 +50,7 @@ from agent import (
     Critique,
     CritiqueIssue,
     Digest,
+    DigestItem,
     summarize_agent,
     verify_agent,
 )
@@ -69,6 +78,62 @@ _FORMAT_FEEDBACK = Critique(
         )
     ],
 )
+
+
+# --- dict-state converters --------------------------------------------------
+# `to_dict` is dataclasses.asdict (recurses into nested dataclasses). `from_dict`
+# is TOLERANT of missing keys (.get with defaults): that is the whole point of
+# dict-state — a checkpoint written by an older build must still resume after a
+# redeploy that added a field. Round-trip identity (from_dict∘to_dict == obj) is
+# pinned by tests.
+
+
+def _feeditem_to_dict(item: FeedItem) -> dict:
+    return asdict(item)
+
+
+def _feeditem_from_dict(d: dict) -> FeedItem:
+    return FeedItem(
+        title=d.get("title", ""),
+        link=d.get("link", ""),
+        summary=d.get("summary", ""),
+        published=d.get("published", ""),
+    )
+
+
+def _digest_to_dict(digest: Digest) -> dict:
+    return asdict(digest)
+
+
+def _digest_from_dict(d: dict) -> Digest:
+    return Digest(
+        items=[
+            DigestItem(
+                title=it.get("title", ""),
+                link=it.get("link", ""),
+                one_line_summary=it.get("one_line_summary", ""),
+            )
+            for it in d.get("items", [])
+        ]
+    )
+
+
+def _critique_to_dict(critique: Critique) -> dict:
+    return asdict(critique)
+
+
+def _critique_from_dict(d: dict) -> Critique:
+    return Critique(
+        passed=bool(d.get("passed", False)),
+        issues=[
+            CritiqueIssue(
+                index=iss.get("index"),
+                kind=iss.get("kind", "unspecified"),
+                detail=iss.get("detail", ""),
+            )
+            for iss in d.get("issues", [])
+        ],
+    )
 
 
 def _summarize_issues(critique: Critique | None) -> str:
@@ -110,41 +175,46 @@ def _verify_bounded(
 
 
 class _State(TypedDict):
-    """Graph state. Inputs + the loop's working values. NO callables here (the
-    agents are injected via config so state stays checkpointer-serializable)."""
+    """Graph state — JSON-native only (checkpointer-serializable). NO dataclasses
+    and NO callables (agents are injected via config)."""
 
-    items: list[FeedItem]
+    items: list[dict]  # serialized FeedItems
     n: int
     model: str
     max_redos: int
     attempt: int  # number of summarize calls made so far (1-based after a call)
-    feedback: Critique | None
-    digest: Digest | None  # the most recent schema-valid candidate (retained)
+    feedback: dict | None  # serialized Critique
+    digest: dict | None  # serialized Digest — most recent valid candidate (retained)
     summarize_ok: bool
-    result: Digest | None  # set only by a terminal node; the final answer
+    result: dict | None  # serialized Digest — set only by a terminal node; the answer
 
 
 def _summarize_node(state: _State, config) -> dict:
     summarize_fn = config["configurable"]["summarize_fn"]
     attempt = state["attempt"] + 1
+    items = [_feeditem_from_dict(d) for d in state["items"]]
+    feedback = _critique_from_dict(state["feedback"]) if state["feedback"] else None
     try:
-        digest = summarize_fn(
-            state["items"], state["n"], state["model"], feedback=state["feedback"]
-        )
+        digest = summarize_fn(items, state["n"], state["model"], feedback=feedback)
     except AgentContractError as exc:
         # Summarizer output failed its contract — never ship dirty data. Leave
         # `digest` untouched (LangGraph keeps the prior value) so a later cap can
         # still fall back to the last schema-valid digest.
         log.warning("summarizer invalid output (attempt %d): %s", attempt, exc)
-        return {"attempt": attempt, "summarize_ok": False, "feedback": _FORMAT_FEEDBACK}
-    return {"attempt": attempt, "digest": digest, "summarize_ok": True}
+        return {
+            "attempt": attempt,
+            "summarize_ok": False,
+            "feedback": _critique_to_dict(_FORMAT_FEEDBACK),
+        }
+    return {"attempt": attempt, "digest": _digest_to_dict(digest), "summarize_ok": True}
 
 
 def _verify_node(state: _State, config) -> dict:
     verify_fn = config["configurable"]["verify_fn"]
-    digest = state["digest"]
+    digest = _digest_from_dict(state["digest"])
+    items = [_feeditem_from_dict(d) for d in state["items"]]
     attempt = state["attempt"]
-    critique = _verify_bounded(digest, state["items"], state["model"], verify_fn)
+    critique = _verify_bounded(digest, items, state["model"], verify_fn)
     if critique is None:
         # Verifier couldn't produce a valid review: accept the summarizer-validated
         # digest (degrades to pre-Phase-5 quality, never masks a fail as a pass).
@@ -153,27 +223,35 @@ def _verify_node(state: _State, config) -> dict:
             "summarizer-validated digest",
             attempt,
         )
-        return {"result": digest}
+        return {"result": state["digest"]}
     if critique.passed:
         log.info("digest accepted on attempt %d", attempt)
-        return {"result": digest}
+        return {"result": state["digest"]}
     log.info(
         "digest rejected on attempt %d (%d issue(s)); redoing",
         attempt,
         len(critique.issues),
     )
-    return {"feedback": critique}
+    return {"feedback": _critique_to_dict(critique)}
 
 
 def _accept_last_node(state: _State) -> dict:
     # Redo budget exhausted with the digest still failing review: accept the last
     # schema-valid digest and log the open issues (the bounded backstop).
+    feedback = _critique_from_dict(state["feedback"]) if state["feedback"] else None
     log.warning(
         "redo limit (%d) reached; accepting last digest with open issues: %s",
         state["max_redos"],
-        _summarize_issues(state["feedback"]),
+        _summarize_issues(feedback),
     )
     return {"result": state["digest"]}
+
+
+def _finalize_gate_node(state: _State) -> dict:
+    # No-op convergence point for every "we have a result" terminal. Unit 3 makes
+    # this the optional human-review gate; for the digest default it passes straight
+    # to END.
+    return {}
 
 
 def _route_after_summarize(state: _State) -> str:
@@ -189,36 +267,64 @@ def _route_after_summarize(state: _State) -> str:
 
 def _route_after_verify(state: _State) -> str:
     if state["result"] is not None:
-        return "end"  # pass or inconclusive already set the result
+        return "finalize_gate"  # pass or inconclusive already set the result
     # failing critique (feedback already set to the critique)
     if state["attempt"] <= state["max_redos"]:
         return "summarize"
     return "accept_last"
 
 
-def _build_app():
+def _build_builder() -> StateGraph:
+    """The single shared graph definition. Compiled without a checkpointer for the
+    digest default (`_APP`), and with a checkpointer for interruptible runs."""
     g = StateGraph(_State)
     g.add_node("summarize", _summarize_node)
     g.add_node("verify", _verify_node)
     g.add_node("accept_last", _accept_last_node)
+    g.add_node("finalize_gate", _finalize_gate_node)
     g.add_edge(START, "summarize")
     g.add_conditional_edges(
         "summarize",
         _route_after_summarize,
-        {"verify": "verify", "summarize": "summarize", "accept_last": "accept_last", "give_up": END},
+        {
+            "verify": "verify",
+            "summarize": "summarize",
+            "accept_last": "accept_last",
+            "give_up": END,
+        },
     )
     g.add_conditional_edges(
         "verify",
         _route_after_verify,
-        {"end": END, "summarize": "summarize", "accept_last": "accept_last"},
+        {"finalize_gate": "finalize_gate", "summarize": "summarize", "accept_last": "accept_last"},
     )
-    g.add_edge("accept_last", END)
-    # No checkpointer in Unit 2: the digest runs straight through. (Unit 3 adds an
-    # optional checkpointer for human-in-the-loop suspend/resume.)
-    return g.compile()
+    g.add_edge("accept_last", "finalize_gate")
+    g.add_edge("finalize_gate", END)
+    return g
 
 
-_APP = _build_app()
+_APP = _build_builder().compile()  # no checkpointer: the digest default runs straight through
+
+
+def _initial_state(items: list[FeedItem], n: int, model: str, max_redos: int) -> _State:
+    return {
+        "items": [_feeditem_to_dict(it) for it in items],
+        "n": n,
+        "model": model,
+        "max_redos": max_redos,
+        "attempt": 0,
+        "feedback": None,
+        "digest": None,
+        "summarize_ok": False,
+        "result": None,
+    }
+
+
+def _recursion_limit(max_redos: int) -> int:
+    # Bound the engine's own loop generously relative to our redo cap so a custom
+    # max_redos never trips LangGraph's recursion guard (max_redos is the real
+    # bound). Each attempt is ~2 super-steps (summarize + verify).
+    return 2 * (max_redos + 1) + 10
 
 
 def build_digest(
@@ -233,31 +339,17 @@ def build_digest(
     """Produce a verified Digest via a bounded summarize → verify → redo loop.
 
     Drop-in for `agent.summarize` from the runner's perspective: same
-    (items, n, model) → Digest contract. Internally invokes the LangGraph app;
-    see the module docstring for the control flow.
+    (items, n, model) → Digest contract. Internally invokes the LangGraph app
+    (no checkpointer); see the module docstring for the control flow.
     """
     if not items:
         return Digest(items=[])  # short-circuit: no model/graph work for empty input
 
-    state0: _State = {
-        "items": items,
-        "n": n,
-        "model": model,
-        "max_redos": max_redos,
-        "attempt": 0,
-        "feedback": None,
-        "digest": None,
-        "summarize_ok": False,
-        "result": None,
-    }
     config = {
         "configurable": {"summarize_fn": summarize_fn, "verify_fn": verify_fn},
-        # Bound the engine's own loop generously relative to our redo cap so a
-        # custom max_redos never trips LangGraph's recursion guard (max_redos is
-        # the real bound). Each attempt is ~2 super-steps (summarize + verify).
-        "recursion_limit": 2 * (max_redos + 1) + 10,
+        "recursion_limit": _recursion_limit(max_redos),
     }
-    final = _APP.invoke(state0, config=config)
+    final = _APP.invoke(_initial_state(items, n, model, max_redos), config=config)
     if final["result"] is None:
         # The give-up terminal: the summarizer never produced a schema-valid
         # digest within budget. Raise (the run is recorded failed) — no dirty data.
@@ -265,4 +357,4 @@ def build_digest(
             "summarizer never produced a schema-valid digest after "
             f"{max_redos + 1} attempt(s)"
         )
-    return final["result"]
+    return _digest_from_dict(final["result"])

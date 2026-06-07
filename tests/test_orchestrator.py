@@ -148,6 +148,53 @@ def test_engine_is_a_compiled_langgraph_with_expected_nodes():
     assert {"summarize", "verify", "accept_last"} <= nodes
 
 
+# --- dict-state converters: lossless round-trip + tolerant decode (Unit 3) ---
+
+
+def _json_native(obj):
+    """True if obj is built only from JSON-native types (no dataclass leaked)."""
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return True
+    if isinstance(obj, list):
+        return all(_json_native(x) for x in obj)
+    if isinstance(obj, dict):
+        return all(isinstance(k, str) and _json_native(v) for k, v in obj.items())
+    return False
+
+
+def test_converters_roundtrip_is_identity():
+    # from_dict ∘ to_dict == original, for each checkpointed type — and the dict
+    # form is strictly JSON-native (the checkpointer never sees a dataclass).
+    fi = FeedItem("A & B", "https://e/a", "body", "2026-01-01")
+    dg = Digest([DigestItem("T1", "https://e/1", "s1"), DigestItem("T2", "", "s2")])
+    cr = Critique(False, [CritiqueIssue(2, "hallucination", "x"), CritiqueIssue(None, "format", "y")])
+    cr_pass = Critique(True, [])
+    pairs = [
+        (orchestrator._feeditem_to_dict, orchestrator._feeditem_from_dict, fi),
+        (orchestrator._digest_to_dict, orchestrator._digest_from_dict, dg),
+        (orchestrator._critique_to_dict, orchestrator._critique_from_dict, cr),
+        (orchestrator._critique_to_dict, orchestrator._critique_from_dict, cr_pass),
+    ]
+    for to_d, from_d, obj in pairs:
+        d = to_d(obj)
+        assert _json_native(d), f"{type(obj).__name__} dict is not JSON-native: {d!r}"
+        assert from_d(d) == obj  # lossless
+
+
+def test_from_dict_tolerates_missing_keys():
+    # The payoff of dict-state: a checkpoint missing a field (older build) still
+    # resumes — from_dict fills defaults instead of raising.
+    assert orchestrator._feeditem_from_dict({}) == FeedItem("", "", "", "")
+    assert orchestrator._digest_from_dict({}) == Digest([])
+    assert orchestrator._digest_from_dict({"items": [{"one_line_summary": "s"}]}) == Digest(
+        [DigestItem("", "", "s")]
+    )
+    assert orchestrator._critique_from_dict({}) == Critique(False, [])
+    assert orchestrator._critique_from_dict({"passed": False, "issues": [{}]}) == Critique(
+        False, [CritiqueIssue(None, "unspecified", "")]
+    )
+
+
 def test_inconclusive_after_a_real_failure_degrades_not_fakes_pass(caplog):
     # "Never fake a pass" on its dangerous path: a REAL failing critique, redo,
     # then the verifier goes malformed → accept the CURRENT (post-redo) digest as
