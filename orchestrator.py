@@ -121,7 +121,6 @@ class _State(TypedDict):
     feedback: Critique | None
     digest: Digest | None  # the most recent schema-valid candidate (retained)
     summarize_ok: bool
-    critique: Critique | None
     result: Digest | None  # set only by a terminal node; the final answer
 
 
@@ -154,16 +153,16 @@ def _verify_node(state: _State, config) -> dict:
             "summarizer-validated digest",
             attempt,
         )
-        return {"critique": None, "result": digest}
+        return {"result": digest}
     if critique.passed:
         log.info("digest accepted on attempt %d", attempt)
-        return {"critique": critique, "result": digest}
+        return {"result": digest}
     log.info(
         "digest rejected on attempt %d (%d issue(s)); redoing",
         attempt,
         len(critique.issues),
     )
-    return {"critique": critique, "feedback": critique}
+    return {"feedback": critique}
 
 
 def _accept_last_node(state: _State) -> dict:
@@ -249,7 +248,6 @@ def build_digest(
         "feedback": None,
         "digest": None,
         "summarize_ok": False,
-        "critique": None,
         "result": None,
     }
     config = {

@@ -146,3 +146,42 @@ def test_engine_is_a_compiled_langgraph_with_expected_nodes():
     # a hand-rolled loop pretending to be one.
     nodes = set(orchestrator._APP.get_graph().nodes)
     assert {"summarize", "verify", "accept_last"} <= nodes
+
+
+def test_inconclusive_after_a_real_failure_degrades_not_fakes_pass(caplog):
+    # "Never fake a pass" on its dangerous path: a REAL failing critique, redo,
+    # then the verifier goes malformed → accept the CURRENT (post-redo) digest as
+    # inconclusive — not the original, and not a faked pass. (Distinct from the
+    # first-attempt-inconclusive case where original == current.)
+    s = FakeSummarizer(_digest("d1"), _digest("d2"))
+    v = FakeVerifier(_fail(), AgentContractError("bad"), AgentContractError("bad"))
+    with caplog.at_level(logging.INFO):
+        out = build_digest(ITEMS, 2, "m", summarize_fn=s, verify_fn=v)
+    assert out == _digest("d2")  # the current post-redo digest, NOT d1
+    assert len(s.calls) == 2 and len(v.calls) == 3  # 1 fail + 2 re-verify attempts
+    msgs = [r.message for r in caplog.records]
+    assert any("inconclusive" in m for m in msgs)
+    assert not any("redo limit" in m for m in msgs)  # not a cap-reached accept
+    assert not any("accepted on attempt" in m for m in msgs)  # not a faked pass
+
+
+def test_max_redos_zero_takes_first_digest_no_redo(caplog):
+    # Boundary: max_redos=0 means exactly one attempt, no redo even on failure.
+    s = FakeSummarizer(_digest("d1"))
+    v = FakeVerifier(_fail())
+    with caplog.at_level(logging.WARNING):
+        out = build_digest(ITEMS, 2, "m", max_redos=0, summarize_fn=s, verify_fn=v)
+    assert out == _digest("d1")
+    assert len(s.calls) == 1 and len(v.calls) == 1  # no redo
+    assert s.calls[0]["feedback"] is None  # never asked to redo
+    assert any("redo limit (0) reached" in r.message for r in caplog.records)
+
+
+def test_large_max_redos_stays_bounded_and_within_recursion_limit():
+    # max_redos=5, all failing → 6 summarize + 6 verify, accept last. Exercises the
+    # recursion_limit formula (2*(max_redos+1)+10) — no RecursionError.
+    s = FakeSummarizer(*[_digest(f"d{i}") for i in range(1, 7)])
+    v = FakeVerifier(*[_fail() for _ in range(6)])
+    out = build_digest(ITEMS, 2, "m", max_redos=5, summarize_fn=s, verify_fn=v)
+    assert out == _digest("d6")
+    assert len(s.calls) == 6 and len(v.calls) == 6
