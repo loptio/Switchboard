@@ -173,3 +173,14 @@ export TEST_DATABASE_URL='postgresql+psycopg://user:password@localhost:5432/agen
 - Timestamps are stored and returned as UTC. SQLite drops timezones, so the
   layer normalizes every datetime to UTC before writing/comparing — pass
   timezone-aware UTC datetimes.
+
+## Project docs & backlog
+
+System design and phase plans live in [`docs/`](docs/):
+
+- [架构与建造蓝图](docs/Agent系统·架构与建造蓝图_1.md) — the north-star
+  architecture (single source of truth)
+- [Phase 1 简报](docs/Phase1·任务简报-单agent新闻简报_1.md) ·
+  [Phase 2 简报](docs/Phase2·任务简报-DB+调度+邮件推送.md) — per-phase task briefs
+
+Deferred, tracked-but-not-now items are in [`BACKLOG.md`](BACKLOG.md).
