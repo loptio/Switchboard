@@ -1,11 +1,13 @@
 """Runner — orchestrate ONE full run of the news workflow.
 
-    fetch -> summarize -> render -> write local file (Phase 1, kept)
+    fetch -> build_digest (summarize+verify, Phase 5) -> render -> write file
           -> save to DB (Output) + record Run status -> email (call point)
 
-This is the only Phase 2 module that drives the Phase 1 pipeline. It does NOT
-duplicate Phase 1 logic — it imports fetch/agent/output unchanged and adds the
-DB writes (via the `db` data-access layer) and the email call point.
+This is the only Phase 2 module that drives the pipeline. It does NOT duplicate
+pipeline logic — it imports fetch/orchestrator/output and adds the DB writes (via
+the `db` data-access layer) and the email call point. Phase 5 swapped the single
+`agent.summarize` step for `orchestrator.build_digest`, which returns the same
+Digest contract, so everything downstream (render/store/email) is unchanged.
 
 Run status lifecycle: pending (create_run) -> running -> success; or failed if
 the pipeline raises. Email is attempted AFTER the digest is saved and the run is
@@ -25,10 +27,11 @@ from dataclasses import asdict
 from datetime import date, datetime
 
 import db
-from agent import Digest, summarize
+from agent import Digest
 from config import Config, load_config
 from fetch import fetch_feed
 from mailer import send_digest
+from orchestrator import build_digest
 from output import render_markdown, write_digest
 
 log = logging.getLogger(__name__)
@@ -55,7 +58,7 @@ def _run_pipeline(
     """
     try:
         items = fetch_feed(cfg.feed_url)
-        digest = summarize(items, cfg.count, cfg.model)
+        digest = build_digest(items, cfg.count, cfg.model)
         day = now.date() if now is not None else date.today()
         markdown = render_markdown(digest, cfg.feed_url, day)
         # Phase 1 behaviour preserved: still write the local markdown file...

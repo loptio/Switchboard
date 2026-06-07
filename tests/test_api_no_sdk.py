@@ -19,7 +19,7 @@ def test_web_app_does_not_import_the_agent_sdk():
         "from api.settings import APISettings\n"
         "import api.app\n"
         "api.app.create_app(APISettings(secret_key='x'))\n"
-        "worker = {'runner', 'agent', 'scheduler', 'mailer', 'fetch'}\n"
+        "worker = {'runner', 'agent', 'orchestrator', 'llm', 'scheduler', 'mailer', 'fetch'}\n"
         "leaked = sorted(m for m in sys.modules "
         "if 'claude_agent_sdk' in m or m in worker)\n"
         "assert not leaked, leaked\n"

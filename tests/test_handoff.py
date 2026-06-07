@@ -64,7 +64,7 @@ def fake_pipeline(monkeypatch, tmp_path):
     """Stub the Phase 1 pipeline + email + config so the drain runs fully offline
     (no network, no SDK, no SMTP) and writes only into tmp_path."""
     monkeypatch.setattr(runner, "fetch_feed", lambda url: FAKE_ITEMS)
-    monkeypatch.setattr(runner, "summarize", lambda items, n, model: FAKE_DIGEST)
+    monkeypatch.setattr(runner, "build_digest", lambda items, n, model: FAKE_DIGEST)
     monkeypatch.setattr(runner, "send_digest", lambda digest: None)
     cfg = Config(feed_url="https://feed/rss", count=1, output_dir=tmp_path, model="m")
     monkeypatch.setattr(runner, "load_config", lambda: cfg)

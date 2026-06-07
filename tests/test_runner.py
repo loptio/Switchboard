@@ -49,7 +49,8 @@ def _raise(msg):
 @pytest.fixture
 def fake_pipeline(monkeypatch):
     monkeypatch.setattr(runner, "fetch_feed", lambda url: FAKE_ITEMS)
-    monkeypatch.setattr(runner, "summarize", lambda items, n, model: FAKE_DIGEST)
+    # The runner now calls the orchestrator (summarize+verify); same I/O contract.
+    monkeypatch.setattr(runner, "build_digest", lambda items, n, model: FAKE_DIGEST)
 
 
 def test_run_once_success(database, fake_pipeline, tmp_path, monkeypatch):
