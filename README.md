@@ -447,6 +447,75 @@ npm run build       # type-check + production build
 
 The frontend does not touch the backend; the backend's test suite is unaffected.
 
+## Phase 5 — Multi-agent orchestration (Unit 1)
+
+Phase 5 upgrades the single "summarize" step into a **multi-agent subprocess**: a
+deterministic **orchestrator** coordinates a **summarizer agent** and a
+**verifier agent** that checks the digest **against the source items**, feeding a
+critique back for a bounded number of redos. The orchestrator returns the **same
+`Digest`** as before, so the runner and everything downstream (render / store /
+email) are unchanged.
+
+```
+fetch → orchestrator.build_digest ─────────────────────────┐ → render → store → email
+            │                                              │   (all unchanged)
+            ├─ summarizer agent → Digest (strict-validated)│
+            └─ verifier agent  → Critique (vs SOURCE) ──────┘
+               pass → done · fail → feed back & redo (≤2) · cap → accept last + log
+```
+
+**The orchestrator is plain code, not an LLM deciding the flow** (a meta-agent is
+a later phase) — so it's predictable, testable, and the SDK cost is bounded.
+
+### The two agent contracts (the "glue")
+
+| Agent             | Input                                   | Output (validated)                                   |
+| ----------------- | --------------------------------------- | ---------------------------------------------------- |
+| `summarize_agent` | source items (+ reviewer feedback on a redo) | `Digest` — `parse_digest`: exact count, non-empty summaries; **title/link taken verbatim from the source by position** (the model's echo isn't trusted, so fabricated links are impossible by construction) |
+| `verify_agent`    | candidate `Digest` **+ the source items** | `Critique{passed, issues[]}` — `parse_critique`: `passed` a real bool; a failing review must carry ≥1 actionable issue |
+
+Every agent reply is **validated against its schema**; a violation raises
+`AgentContractError` and **dirty data never flows downstream**. Deterministic
+checks (link/title real, item count) live in code; the verifier LLM does the one
+thing code can't — judging whether each summary is **faithful to its source**.
+
+### Control flow & bounded redo
+
+- summarize → verify → **pass** ends the loop and returns the digest.
+- **fail** (with issues) → the critique is fed back and the summarizer redoes,
+  capped at **`max_redos=2`** (1 draft + 2 redos).
+- **cap reached, still failing** → accept the **last** schema-valid digest and log
+  the open issues (an LLM reviewer can be wrong or never satisfied; the cap is the
+  backstop — never an infinite loop or unbounded spend).
+- **verifier malformed** → re-verify the same digest once, then accept the current
+  digest (degrades to summarizer-only quality; never masked as a pass).
+- **summarizer never yields valid output** → the run fails (no digest is shipped).
+
+Cost ceiling per run: ≤ `max_redos+1` summarizer calls and ≤ `(max_redos+1)×2`
+verifier calls.
+
+### The model seam (swap models without touching the orchestrator)
+
+`llm.py` is now the **only** module that imports the Agent SDK — a single
+`complete(prompt, *, system_prompt, model)`. Both agents call it (and take it as
+an injectable parameter), so swapping models or adding routing later means editing
+only `llm.py`; the orchestrator is untouched. The `agent.summarize` Phase 1 path
+(`main.py`) still works, unchanged, through the same seam.
+
+### Tests (offline)
+
+Fully offline — the LLM is mocked at two layers: orchestrator tests inject fake
+agents (scripted per attempt: pass, redo→pass, cap→accept-last, malformed verifier,
+dirty summarizer) and assert call counts are **bounded**; agent tests inject a fake
+`llm` and exercise the strict parsers. No network, no SDK, no API key.
+
+```bash
+.venv/bin/python -m pytest        # the whole suite, incl. tests/test_orchestrator.py + test_agents.py
+```
+
+The real end-to-end (real SDK, real review/redo) is the local acceptance step, as
+in Phases 2/3: `.venv/bin/python cli.py run-once` and watch the run log.
+
 ## Project docs & backlog
 
 System design and phase plans live in [`docs/`](docs/):
@@ -455,6 +524,8 @@ System design and phase plans live in [`docs/`](docs/):
   architecture (single source of truth)
 - [Phase 1 简报](docs/Phase1·任务简报-单agent新闻简报_1.md) ·
   [Phase 2 简报](docs/Phase2·任务简报-DB+调度+邮件推送.md) ·
-  [Phase 3 · Unit 1 简报](docs/Phase3·Unit1任务简报-后端API+认证.md) — per-phase task briefs
+  [Phase 3 · Unit 1 简报](docs/Phase3·Unit1任务简报-后端API+认证.md) ·
+  [Phase 3 · Unit 2 简报](docs/Phase3·Unit2任务简报-React前端.md) ·
+  [Phase 5 · Unit 1 简报](docs/Phase5·Unit1任务简报-多agent编排.md) — per-phase task briefs
 
 Deferred, tracked-but-not-now items are in [`BACKLOG.md`](BACKLOG.md).
