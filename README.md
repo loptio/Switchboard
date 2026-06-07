@@ -516,6 +516,56 @@ dirty summarizer) and assert call counts are **bounded**; agent tests inject a f
 The real end-to-end (real SDK, real review/redo) is the local acceptance step, as
 in Phases 2/3: `.venv/bin/python cli.py run-once` and watch the run log.
 
+## Phase 5 — LangGraph engine & human-in-the-loop (Units 2–3)
+
+**Unit 2 (migration):** the orchestrator's control flow is now a **LangGraph
+`StateGraph`** instead of a hand-rolled loop — the engine is borrowed, the system
+(agent composition, contracts, the bounded-redo policy) stays ours. `build_digest`
+keeps the same `(items, n, model) → Digest` contract, so the runner and the rest
+of the pipeline are untouched and the behavior is identical (same cap, accept-last,
+bounded re-verify, cost ceiling). LangGraph is **worker-only**: a test asserts the
+web tier imports neither the Agent SDK nor `langgraph`. Graph nodes reach the model
+**only via the agents** (`llm.py`) — never the SDK directly.
+
+**Unit 3 (human-in-the-loop suspend/resume):** an **optional** review gate. After
+the auto summarize→verify loop produces a verified digest, the graph can
+`interrupt()` and hand the digest to a human; it **suspends**, its state persisted
+by a **checkpointer**, and the run goes to `awaiting_input`. A separate process
+resumes it with a decision. The digest's scheduled/automatic runs **do not** use a
+checkpoint — they run straight through (a 6am run never blocks).
+
+```bash
+# one-time: create the checkpoint tables (a migration step, idempotent)
+.venv/bin/python cli.py checkpointer-setup
+
+# start an interactive run that pauses for your approval
+.venv/bin/python cli.py run-once --review
+#   → prints: run <id>: awaiting_input, the digest to review, and a resume hint
+
+# resume it with your decision (a separate invocation / process)
+.venv/bin/python cli.py resume-run <run_id> --decision approve
+.venv/bin/python cli.py resume-run <run_id> --decision redo --feedback "tighten item 2"
+```
+
+**Two state stores, one database, no coupling:** the LangGraph **checkpointer**
+owns *graph execution state* (its own `checkpoints*` tables, created by
+`checkpointer-setup`); the **`runs` table** owns the *business record*
+(status/outputs). They live in the same Postgres in **different tables with no
+foreign key**, correlated only by `thread_id == run_id`. State is JSON-native
+(dict-state), so a checkpoint written by an older build still resumes after a
+redeploy.
+
+### Tests (offline)
+
+The suspend/persist/**resume-after-reload** cycle is proven offline with a real
+in-memory checkpointer (`InMemorySaver`) and injected fake agents — resume
+compiles a fresh app bound to the same saver, so success proves the state came
+from the checkpoint. Tests also assert the checkpointed state never contains a
+dataclass. `pytest` runs everything; no network/SDK/Postgres/API key.
+
+The real end-to-end (real SDK + **PostgresSaver**) is the local acceptance step:
+`checkpointer-setup` → `run-once --review` → `resume-run … --decision approve`.
+
 ## Project docs & backlog
 
 System design and phase plans live in [`docs/`](docs/):
@@ -526,6 +576,7 @@ System design and phase plans live in [`docs/`](docs/):
   [Phase 2 简报](docs/Phase2·任务简报-DB+调度+邮件推送.md) ·
   [Phase 3 · Unit 1 简报](docs/Phase3·Unit1任务简报-后端API+认证.md) ·
   [Phase 3 · Unit 2 简报](docs/Phase3·Unit2任务简报-React前端.md) ·
-  [Phase 5 · Unit 1 简报](docs/Phase5·Unit1任务简报-多agent编排.md) — per-phase task briefs
+  [Phase 5 · Unit 1 简报](docs/Phase5·Unit1任务简报-多agent编排.md) ·
+  [Phase 5 · 余下单元简报](docs/Phase5·余下单元任务简报-编排引擎迁LangGraph+人在环.md) — per-phase task briefs
 
 Deferred, tracked-but-not-now items are in [`BACKLOG.md`](BACKLOG.md).

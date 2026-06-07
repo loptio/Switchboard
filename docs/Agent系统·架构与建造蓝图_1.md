@@ -203,5 +203,7 @@
 | 5 | 新闻源 + 解析 | RSS(目前 Hacker News) | 产出契约 = 结构化 Digest(title / link / one_line_summary) |
 | 6 | pgvector 长期记忆 | 推迟 | 非 Phase 2;待长期记忆需求出现再引入 |
 | 7 | 前端最小范围 | 登录 + 运行看板 + 运行详情/产出 + 排程 CRUD + 立即跑;响应式 | 见 Phase 3 Unit 2 简报 |
+| 8 | 编排引擎 | **LangGraph**(系统自建,引擎借用) | StateGraph;节点经 `llm.py` 调模型、不直连 SDK;web 层不加载 langgraph(测试守卫);digest 默认不挂 checkpoint。见 Phase 5 余下单元简报 |
+| 9 | 人在环 suspend/resume | **引擎层原语已落地**(`interrupt()` + checkpointer + `resume-run` CLI) | `thread_id == run_id`;PostgresSaver 与 `runs` 同库不同表、无 FK;dict-state(避开 dataclass 易碎序列化);web 化留后续 phase |
 
 > 除第 4 项外均已落地。细节以代码 + 各阶段简报为准(本表只记"定了什么")。

@@ -43,3 +43,16 @@ they don't get silently lost or pulled into the wrong phase.
   success/failed.
   - _Revisit:_ the monitoring/observability unit (same place as the email
     delivery-status item above).
+
+## Checkpointer / orchestration (Phase 5)
+
+- **Completed-run checkpoints are never garbage-collected.** A human-in-the-loop
+  run leaves its LangGraph checkpoint rows (`checkpoints*` tables) behind after it
+  finishes (Unit 3 doesn't delete them). Harmless at low volume, but the tables
+  grow unbounded over time. When it matters, add a cleanup step (delete a thread's
+  checkpoints once its run reaches a terminal state, or a periodic sweep of
+  checkpoints whose run is success/failed).
+  - _Why deferred:_ not needed for the primitive; correctness doesn't depend on it,
+    and premature GC risks deleting state a resume still needs.
+  - _Revisit:_ when human-in-the-loop runs are used in volume (or when the
+    monitoring unit touches run lifecycle anyway).
