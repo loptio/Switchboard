@@ -76,6 +76,10 @@ async def _run_query(prompt: str, model: str) -> str:
 
     text_chunks: list[str] = []
     result_text: str | None = None
+    error: str | None = None
+    # ResultMessage is the terminal message, so let the generator finish
+    # naturally; capture errors and raise after the loop rather than mid-
+    # iteration (raising inside `async for` aborts the generator mid-run).
     async for message in query(prompt=prompt, options=options):
         if isinstance(message, AssistantMessage):
             for block in message.content:
@@ -83,10 +87,12 @@ async def _run_query(prompt: str, model: str) -> str:
                     text_chunks.append(block.text)
         elif isinstance(message, ResultMessage):
             if message.is_error:
-                raise RuntimeError(
-                    f"Agent run failed: {message.result or message.errors}"
-                )
-            result_text = message.result
+                error = str(message.result or message.errors)
+            else:
+                result_text = message.result
+
+    if error is not None:
+        raise RuntimeError(f"Agent run failed: {error}")
 
     text = (result_text or "".join(text_chunks)).strip()
     if not text:
@@ -108,7 +114,15 @@ def summarize(items: list[FeedItem], n: int, model: str) -> Digest:
         return Digest(items=[])
 
     prompt = _build_prompt(items, n)
-    raw = anyio.run(_run_query, prompt, model)
+    try:
+        raw = anyio.run(_run_query, prompt, model)
+    except Exception as exc:  # surface a clear, actionable message
+        raise RuntimeError(
+            f"Agent summarization failed: {exc}\n"
+            "If this is an auth error (e.g. 'Not logged in'), authenticate the "
+            "Claude Code CLI with your subscription: run `claude`, then /login. "
+            "Do NOT set ANTHROPIC_API_KEY (that bills the paid API)."
+        ) from exc
     data = _parse_json_array(raw)
 
     digest_items = [
