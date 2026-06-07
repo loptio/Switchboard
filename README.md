@@ -6,8 +6,9 @@ local markdown digest and print it to the console.
 This began as **Phase 1** of a larger agent system: a single, sequential
 vertical slice (no database, scheduling, notifications, or web UI). **Phase 2 is
 now in progress** — the data layer (Unit 1) adds a PostgreSQL source of truth
-and the scheduler/runner (Unit 2) runs the workflow on schedule. Email delivery
-(Unit 3), web UI, and multi-provider models are still upcoming.
+and the scheduler/runner (Unit 2) runs the workflow on schedule, and email
+(Unit 3) pushes the digest by SMTP. Web UI and multi-provider models are still
+upcoming.
 
 ## How it works
 
@@ -177,9 +178,9 @@ export TEST_DATABASE_URL='postgresql+psycopg://user:password@localhost:5432/agen
 ## Phase 2 — Scheduler & runner (Unit 2)
 
 Unit 2 adds the **runner** (one full run of the workflow through the data layer)
-and an **APScheduler** heartbeat that fires it on schedule. Email is a stubbed
-call point until Unit 3 — a successful run currently just logs "email not wired
-yet".
+and an **APScheduler** heartbeat that fires it on schedule. Email delivery is
+implemented in Unit 3 (below): a run sends the digest by SMTP if configured, and
+degrades gracefully otherwise.
 
 ```
 fetch → summarize → render → write local file (Phase 1, kept)
@@ -226,6 +227,47 @@ mocked/injected, so the scheduler is tested with mock time and never waits:
 
 A pinned-SDK smoke test (`tests/test_sdk_smoke.py`) guards the `tools=[]`
 one-shot contract against an accidental SDK upgrade (the Phase 1 regression).
+
+## Phase 2 — Email push (Unit 3)
+
+Unit 3 replaces the stub with a real SMTP sender: `send_digest(digest)` renders
+the digest as a **multipart text + HTML** email and sends it. The runner calls it
+after the digest is saved, so email never affects whether a run succeeds:
+
+- **Not configured** (no `SMTP_*` set) → logs and skips; the digest is still
+  saved. Email is opt-in.
+- **Partially configured** (some `SMTP_*` set but a required one missing) → a
+  loud `WARNING` (likely an env typo), then skips.
+- **Configured but the send fails** → the runner logs it and the run still
+  succeeds with its Output saved (graceful degradation).
+
+### Configure SMTP (env only)
+
+Set these in your `.env` (see `.env.example`). Credentials never go in code/Git.
+For **Gmail**, create an **app-specific password** (not your account password).
+
+| Variable        | Required | Default                 | Meaning                             |
+| --------------- | -------- | ----------------------- | ----------------------------------- |
+| `SMTP_HOST`     | ✅       | —                       | SMTP server, e.g. `smtp.gmail.com`  |
+| `SMTP_PORT`     |          | `587`                   | `465` = implicit SSL; else STARTTLS |
+| `SMTP_USERNAME` | ✅       | —                       | login user (Gmail: your address)    |
+| `SMTP_PASSWORD` | ✅       | —                       | app-specific password               |
+| `SMTP_TO`       | ✅       | —                       | recipient(s), comma-separated       |
+| `SMTP_FROM`     |          | = `SMTP_USERNAME`       | sender address                      |
+| `SMTP_SUBJECT`  |          | `News Digest — <today>` | subject override                    |
+
+Then a run delivers the digest:
+
+```bash
+.venv/bin/python cli.py run-once     # fetch → summarize → save → email
+```
+
+The SMTP connection uses a 10s timeout so a hung server can't stall a run. Tests
+stay offline (mock SMTP — no real connection or send):
+
+```bash
+.venv/bin/python -m pytest
+```
 
 ## Project docs & backlog
 
