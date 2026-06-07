@@ -51,9 +51,11 @@ def _report_review(run, outcome) -> int:
     if outcome.status == "suspended":
         print(f"run {run.id}: awaiting_input")
         _print_review(outcome.payload)
+        # Two copy-paste-ready commands (no shell-hostile | or [] to mis-copy).
+        print(f"  approve: python cli.py resume-run {run.id} --decision approve")
         print(
-            f'  resume: python cli.py resume-run {run.id} '
-            f'--decision approve|redo [--feedback "..."]'
+            f"  or redo: python cli.py resume-run {run.id} --decision redo "
+            f'--feedback "what to change"'
         )
         return 0
     print(f"run {run.id}: {run.status}")
