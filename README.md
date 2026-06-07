@@ -269,6 +269,124 @@ stay offline (mock SMTP — no real connection or send):
 .venv/bin/python -m pytest
 ```
 
+## Phase 3 — Control-plane API (Unit 1)
+
+Phase 3 adds the **control plane**: a logged-in REST API (FastAPI) over the
+existing `db` layer to view runs/outputs, manage schedules, and trigger a run
+(a browser UI is Unit 2). It runs as its **own process**, separate from the
+worker, sharing only the database.
+
+**The spine — control plane ↔ worker, through the DB (never a direct call):** the
+web process imports **only `db`**; it never imports `runner`/`agent`/`scheduler`,
+so the Claude Agent SDK never loads into the web tier (a test enforces this). A
+manual trigger therefore cannot run the agent inside the request — instead:
+
+```
+POST /runs ─▶ web writes a *pending* Run (db.create_run) ─▶ 202 returned immediately
+                                  │  (pending row in the DB)
+                                  ▼
+       scheduler heartbeat tick ─▶ claims it (atomic) ─▶ runs the pipeline ─▶ success + output
+```
+
+So **the worker (`cli.py scheduler`) must be running** for a manual trigger to
+actually execute; the API only records intent. Scheduled runs are unchanged from
+Phase 2.
+
+### Endpoints (the OpenAPI contract)
+
+Everything except `POST /auth/login` requires login; state-changing requests also
+require the CSRF header (below). Browse the live contract at `/docs`.
+
+| Method & path            | Purpose                                              |
+| ------------------------ | ---------------------------------------------------- |
+| `POST /auth/login`       | username + password → session cookie                 |
+| `POST /auth/logout`      | clear the session                                    |
+| `GET  /auth/me`          | current login state                                  |
+| `GET  /runs`             | recent runs (filters: `status`, `workflow`, `limit`) |
+| `GET  /runs/{id}`        | one run                                              |
+| `GET  /runs/{id}/output` | a run's outputs (the digest)                         |
+| `POST /runs`             | **manual trigger** → enqueue a pending run (202)     |
+| `GET  /schedules`        | list schedules                                       |
+| `POST /schedules`        | create (validates cron, primes `next_run_at`)        |
+| `PATCH /schedules/{id}`  | enable/disable or change cron/tz                     |
+| `DELETE /schedules/{id}` | delete                                               |
+
+A running scheduler picks up schedule changes on its next tick — no restart (it
+reads schedules from the DB each tick).
+
+### Auth (session cookie + CSRF)
+
+- **Password**: bcrypt via **passlib** — only the hash is stored, hashing is never
+  hand-rolled. Set it with the CLI (below); plaintext never touches argv/Git.
+- **Session**: a **signed** (itsdangerous), **HttpOnly**, **SameSite=Lax** cookie
+  (Starlette `SessionMiddleware`) carrying the user id and a CSRF token. Add
+  `Secure` in production via `COOKIE_SECURE=true`. It has a bounded lifetime
+  (`SESSION_MAX_AGE`, default 12h, sliding) — the login expires; it is never
+  permanent.
+- **CSRF**: SameSite=Lax blocks the cookie on most cross-site writes; on top of
+  that, every `POST`/`PATCH`/`DELETE` must echo the CSRF token in the
+  **`X-CSRF-Token`** header. Login mirrors the token into a JS-readable
+  `csrftoken` cookie for the SPA to read and send back; the server compares it
+  (constant-time) against the authoritative copy in the signed session.
+
+### Configuration (env only)
+
+| Variable             | Required | Default       | Meaning                                     |
+| -------------------- | -------- | ------------- | ------------------------------------------- |
+| `SECRET_KEY`         | ✅       | —             | signs the session cookie (the one secret)   |
+| `COOKIE_SECURE`      |          | `false`       | add `Secure` to cookies (set true on HTTPS) |
+| `CORS_ALLOW_ORIGINS` |          | —             | comma-separated SPA origins (Unit 2)        |
+| `SESSION_MAX_AGE`    |          | `43200` (12h) | session lifetime, in seconds                |
+
+Generate a secret: `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
+The API also needs `DATABASE_URL` (same as Phase 2). `.env` is gitignored.
+
+### Create the login user
+
+```bash
+.venv/bin/python -m alembic upgrade head               # adds the users table (migration 0002)
+.venv/bin/python cli.py create-user --username admin   # prompts for the password
+# later, to reset: cli.py set-password --username admin
+```
+
+### Run the API
+
+```bash
+.venv/bin/pip install -r requirements.txt    # adds FastAPI, uvicorn, passlib, …
+export SECRET_KEY='…'                         # see above (or put it in .env)
+.venv/bin/uvicorn api.app:app --reload        # http://127.0.0.1:8000  (/docs = OpenAPI)
+```
+
+For manual triggers to execute, also run the worker in another terminal:
+
+```bash
+.venv/bin/python cli.py scheduler             # claims pending runs + fires schedules
+```
+
+### Tests (offline)
+
+Fully offline — FastAPI `TestClient` over in-memory SQLite, no network/SDK/SMTP:
+
+```bash
+.venv/bin/python -m pytest
+```
+
+A subprocess test (`tests/test_api_no_sdk.py`) enforces the spine: building the
+web app must **not** import the Agent SDK.
+
+### Scope / notes (Unit 1)
+
+- **In**: FastAPI app, single-user auth, the endpoints above, the `users` table +
+  migration, the manual-trigger handoff, offline tests. **Out**: the React
+  frontend (Unit 2), cloud hosting, multi-user/roles.
+- **Single worker, local.** The atomic claim is multi-worker-safe, but the only
+  worker is `cli.py scheduler`. Avoid running `cli.py run-once` *while* the
+  scheduler drains the same DB — `run-once` executes inline, so a concurrent
+  claim could double-run that one row. Use `POST /runs` (the handoff) to trigger.
+- Migrations target PostgreSQL (as in Phase 2); offline tests build the schema on
+  SQLite via `metadata.create_all`. Run `alembic upgrade head` against real
+  Postgres in your deploy/review environment.
+
 ## Project docs & backlog
 
 System design and phase plans live in [`docs/`](docs/):
@@ -276,6 +394,7 @@ System design and phase plans live in [`docs/`](docs/):
 - [架构与建造蓝图](docs/Agent系统·架构与建造蓝图_1.md) — the north-star
   architecture (single source of truth)
 - [Phase 1 简报](docs/Phase1·任务简报-单agent新闻简报_1.md) ·
-  [Phase 2 简报](docs/Phase2·任务简报-DB+调度+邮件推送.md) — per-phase task briefs
+  [Phase 2 简报](docs/Phase2·任务简报-DB+调度+邮件推送.md) ·
+  [Phase 3 · Unit 1 简报](docs/Phase3·Unit1任务简报-后端API+认证.md) — per-phase task briefs
 
 Deferred, tracked-but-not-now items are in [`BACKLOG.md`](BACKLOG.md).
