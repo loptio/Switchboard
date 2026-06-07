@@ -7,16 +7,20 @@ Each subcommand delegates straight to the data layer / runner / scheduler:
     python cli.py list-schedules
     python cli.py list-runs [--limit N]
     python cli.py scheduler          # start the long-running heartbeat (Ctrl-C to stop)
+    python cli.py create-user --username admin     # control-plane login (prompts for password)
+    python cli.py set-password --username admin     # reset that password (prompts)
 """
 
 from __future__ import annotations
 
 import argparse
+import getpass
 import sys
 
 import db
 import runner
 import scheduler
+from api.security import hash_password
 
 
 def _run_once(args: argparse.Namespace) -> int:
@@ -55,6 +59,45 @@ def _scheduler(args: argparse.Namespace) -> int:
     return 0
 
 
+def _prompt_password() -> str | None:
+    """Read a password interactively (twice), keeping plaintext out of argv and
+    shell history. Returns the password, or None if empty / mismatched."""
+    pw = getpass.getpass("Password: ")
+    if not pw:
+        print("password must not be empty", file=sys.stderr)
+        return None
+    if pw != getpass.getpass("Confirm password: "):
+        print("passwords do not match", file=sys.stderr)
+        return None
+    return pw
+
+
+def _create_user(args: argparse.Namespace) -> int:
+    pw = _prompt_password()
+    if pw is None:
+        return 1
+    try:
+        user = db.create_user(args.username, hash_password(pw))
+    except ValueError as exc:  # username already exists
+        print(f"error: {exc} (use set-password to change it)", file=sys.stderr)
+        return 1
+    print(f"created user {user.username} ({user.id})")
+    return 0
+
+
+def _set_password(args: argparse.Namespace) -> int:
+    pw = _prompt_password()
+    if pw is None:
+        return 1
+    try:
+        db.set_user_password(args.username, hash_password(pw))
+    except LookupError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"updated password for {args.username}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cli", description="Operator commands for the news workflow."
@@ -80,6 +123,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "scheduler", help="start the long-running scheduler (Ctrl-C to stop)"
     ).set_defaults(func=_scheduler)
+
+    cu = sub.add_parser("create-user", help="create the control-plane login user")
+    cu.add_argument("--username", required=True)
+    cu.set_defaults(func=_create_user)
+
+    sp = sub.add_parser("set-password", help="set an existing user's password")
+    sp.add_argument("--username", required=True)
+    sp.set_defaults(func=_set_password)
 
     return parser
 

@@ -50,3 +50,54 @@ def test_add_schedule_dispatches(monkeypatch, capsys):
     assert cli.main(["add-schedule", "--cron", "0 6 * * *", "--tz", "UTC"]) == 0
     assert seen == {"workflow": "news", "cron": "0 6 * * *", "tz": "UTC"}
     assert "s1" in capsys.readouterr().out
+
+
+def _user(**kw):
+    base = dict(id="u1", username="admin", password_hash="h", created_at=NOW)
+    base.update(kw)
+    return db.User(**base)
+
+
+def test_create_user_hashes_and_dispatches(monkeypatch, capsys):
+    from api.security import verify_password
+
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt="": "s3cret")
+    captured = {}
+
+    def fake_create(username, password_hash, **kw):
+        captured.update(username=username, password_hash=password_hash)
+        return _user(username=username, password_hash=password_hash)
+
+    monkeypatch.setattr(db, "create_user", fake_create)
+
+    assert cli.main(["create-user", "--username", "admin"]) == 0
+    assert captured["username"] == "admin"
+    # Stored value is a real hash (not the plaintext) that verifies the password.
+    assert captured["password_hash"] != "s3cret"
+    assert verify_password("s3cret", captured["password_hash"])
+    assert "created user admin" in capsys.readouterr().out
+
+
+def test_create_user_password_mismatch_aborts(monkeypatch):
+    answers = iter(["abc", "xyz"])
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt="": next(answers))
+    called = []
+    monkeypatch.setattr(db, "create_user", lambda *a, **k: called.append(a))
+
+    assert cli.main(["create-user", "--username", "admin"]) == 1
+    assert called == []  # mismatch aborts before touching the DB
+
+
+def test_set_password_dispatches(monkeypatch, capsys):
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt="": "newpw")
+    captured = {}
+    monkeypatch.setattr(
+        db, "set_user_password",
+        lambda username, password_hash: captured.update(
+            username=username, password_hash=password_hash
+        ),
+    )
+
+    assert cli.main(["set-password", "--username", "admin"]) == 0
+    assert captured["username"] == "admin"
+    assert "updated password for admin" in capsys.readouterr().out
