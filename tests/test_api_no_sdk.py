@@ -1,9 +1,12 @@
-"""Architectural contract: the web tier must NOT load the Claude Agent SDK.
+"""Architectural contract: the web tier must NOT load the Claude Agent SDK — nor
+the LangGraph orchestration engine.
 
 The whole point of the handoff (web writes a pending Run; the worker executes it)
-is that the SDK never enters the web process. An in-process sys.modules check is
-unreliable (other tests import `agent`), so we build the app in a fresh
-subprocess and assert the SDK — and the worker modules — never got imported.
+is that heavy worker-only machinery never enters the web process: the Claude
+Agent SDK (Phase 3) and now the LangGraph engine (Phase 5 Unit 2). An in-process
+sys.modules check is unreliable (other tests import `agent`/`orchestrator`), so we
+build the app in a fresh subprocess and assert that neither the SDK, LangGraph,
+nor the worker modules ever got imported.
 """
 
 import os
@@ -13,7 +16,7 @@ import sys
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def test_web_app_does_not_import_the_agent_sdk():
+def test_web_app_does_not_import_the_agent_sdk_or_langgraph():
     code = (
         "import sys\n"
         "from api.settings import APISettings\n"
@@ -21,7 +24,7 @@ def test_web_app_does_not_import_the_agent_sdk():
         "api.app.create_app(APISettings(secret_key='x'))\n"
         "worker = {'runner', 'agent', 'orchestrator', 'llm', 'scheduler', 'mailer', 'fetch'}\n"
         "leaked = sorted(m for m in sys.modules "
-        "if 'claude_agent_sdk' in m or m in worker)\n"
+        "if 'claude_agent_sdk' in m or 'langgraph' in m or m in worker)\n"
         "assert not leaked, leaked\n"
         "print('OK')\n"
     )
