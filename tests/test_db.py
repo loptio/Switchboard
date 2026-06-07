@@ -216,3 +216,28 @@ def test_timestamps_returned_as_utc_aware(database):
     fetched = db.get_run(run.id)
     assert fetched.created_at.tzinfo is not None
     assert fetched.created_at == T0
+
+
+def test_malformed_id_is_treated_as_not_found(database):
+    # A non-UUID id can never match a stored id. Reads return empty; writes
+    # raise LookupError — on BOTH SQLite and Postgres (native uuid column),
+    # where comparing against a malformed literal would otherwise be a DataError.
+    assert db.get_run("not-a-uuid") is None
+    assert db.get_schedule("not-a-uuid") is None
+    assert db.list_outputs("not-a-uuid") == []
+    with pytest.raises(LookupError):
+        db.update_run_status("not-a-uuid", "running")
+    with pytest.raises(LookupError):
+        db.save_output("not-a-uuid", "content")
+    with pytest.raises(LookupError):
+        db.set_schedule_enabled("not-a-uuid", False)
+
+
+def test_writes_to_valid_but_missing_id_raise(database):
+    ghost = "00000000-0000-0000-0000-000000000000"  # well-formed, nonexistent
+    with pytest.raises(LookupError):
+        db.update_run_status(ghost, "running")
+    with pytest.raises(LookupError):
+        db.save_output(ghost, "content")
+    with pytest.raises(LookupError):
+        db.set_schedule_enabled(ghost, False)

@@ -20,7 +20,7 @@ Contract notes:
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import or_, select, update
 
@@ -47,6 +47,18 @@ def _to_utc(dt: datetime | None) -> datetime | None:
 
 def _new_id() -> str:
     return str(uuid4())
+
+
+def _is_uuid(value: object) -> bool:
+    """Whether `value` is a valid UUID. A non-UUID id can never match a stored
+    id, so callers treat it as 'not found' — and on PostgreSQL (native uuid
+    column) this avoids a DataError from comparing against a malformed literal.
+    """
+    try:
+        UUID(str(value))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
 
 
 # --- Runs -----------------------------------------------------------------
@@ -99,6 +111,8 @@ def update_run_status(
     """
     if status not in RUN_STATUSES:
         raise ValueError(f"status must be one of {RUN_STATUSES}, got {status!r}")
+    if not _is_uuid(run_id):
+        raise LookupError(f"No run with id {run_id!r}")
     values: dict = {"status": status}
     if started_at is not None:
         values["started_at"] = _to_utc(started_at)
@@ -130,6 +144,8 @@ def mark_failed(run_id: str, error: str, *, now: datetime | None = None) -> Run:
 
 
 def get_run(run_id: str) -> Run | None:
+    if not _is_uuid(run_id):
+        return None
     with get_engine().connect() as conn:
         row = conn.execute(select(runs).where(runs.c.id == run_id)).mappings().first()
     return Run.from_row(row) if row else None
@@ -168,6 +184,8 @@ def save_output(
     Validates that the run exists so both Postgres (FK) and SQLite (FKs off by
     default) give the same clear error.
     """
+    if not _is_uuid(run_id):
+        raise LookupError(f"No run with id {run_id!r}")
     oid = _new_id()
     created = _to_utc(now) if now is not None else _now()
     with get_engine().begin() as conn:
@@ -196,6 +214,8 @@ def save_output(
 
 def list_outputs(run_id: str) -> list[Output]:
     """List a Run's outputs, oldest first."""
+    if not _is_uuid(run_id):
+        return []
     with get_engine().connect() as conn:
         rows = (
             conn.execute(
@@ -250,6 +270,8 @@ def create_schedule(
 
 
 def _update_schedule(schedule_id: str, values: dict) -> Schedule:
+    if not _is_uuid(schedule_id):
+        raise LookupError(f"No schedule with id {schedule_id!r}")
     with get_engine().begin() as conn:
         result = conn.execute(
             update(schedules).where(schedules.c.id == schedule_id).values(**values)
@@ -283,6 +305,8 @@ def mark_schedule_ran(
 
 
 def get_schedule(schedule_id: str) -> Schedule | None:
+    if not _is_uuid(schedule_id):
+        return None
     with get_engine().connect() as conn:
         row = (
             conn.execute(select(schedules).where(schedules.c.id == schedule_id))
