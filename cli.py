@@ -2,7 +2,9 @@
 
 Each subcommand delegates straight to the data layer / runner / scheduler:
 
-    python cli.py run-once
+    python cli.py run-once [--review]                # --review pauses for human approval
+    python cli.py resume-run <run_id> --decision approve|redo [--feedback "..."]
+    python cli.py checkpointer-setup                 # create checkpoint tables (run once)
     python cli.py add-schedule --cron "0 6 * * *" [--tz UTC] [--workflow news]
     python cli.py list-schedules
     python cli.py list-runs [--limit N]
@@ -23,14 +25,72 @@ import scheduler
 from api.security import hash_password
 
 
+def _print_outputs(run_id: str) -> None:
+    for out in db.list_outputs(run_id):
+        print(f"  output {out.id} ({out.type}), {len(out.content)} chars")
+
+
+def _print_review(payload: dict | None) -> None:
+    digest = (payload or {}).get("digest") or {}
+    print("  digest for review:")
+    for i, item in enumerate(digest.get("items", []), start=1):
+        print(f"    {i}. {item.get('title', '')} — {item.get('one_line_summary', '')}")
+    issues = (payload or {}).get("issues") or []
+    if issues:
+        print("  open issues:")
+        for iss in issues:
+            print(f"    - [{iss.get('kind', '')}] {iss.get('detail', '')}")
+
+
+def _report_review(run, outcome) -> int:
+    """Report a review/resume outcome (shared by run-once --review and resume-run)."""
+    if outcome is None:  # the run failed
+        print(f"run {run.id}: {run.status}")
+        print(f"error: {run.error}", file=sys.stderr)
+        return 1
+    if outcome.status == "suspended":
+        print(f"run {run.id}: awaiting_input")
+        _print_review(outcome.payload)
+        print(
+            f'  resume: python cli.py resume-run {run.id} '
+            f'--decision approve|redo [--feedback "..."]'
+        )
+        return 0
+    print(f"run {run.id}: {run.status}")
+    _print_outputs(run.id)
+    return 0
+
+
 def _run_once(args: argparse.Namespace) -> int:
+    if getattr(args, "review", False):
+        run, outcome = runner.run_review_once()
+        return _report_review(run, outcome)
     run = runner.run_once(trigger="manual")
     print(f"run {run.id}: {run.status}")
     if run.status == "failed":
         print(f"error: {run.error}", file=sys.stderr)
         return 1
-    for out in db.list_outputs(run.id):
-        print(f"  output {out.id} ({out.type}), {len(out.content)} chars")
+    _print_outputs(run.id)
+    return 0
+
+
+def _resume_run(args: argparse.Namespace) -> int:
+    decision: dict = {"action": args.decision}
+    if args.feedback:
+        decision["feedback"] = args.feedback
+    try:
+        run, outcome = runner.resume_run(args.run_id, decision)
+    except (LookupError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return _report_review(run, outcome)
+
+
+def _checkpointer_setup(args: argparse.Namespace) -> int:
+    import checkpoint
+
+    checkpoint.run_setup()
+    print("checkpoint tables ready (idempotent)")
     return 0
 
 
@@ -104,9 +164,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("run-once", help="run the workflow once now (manual trigger)").set_defaults(
-        func=_run_once
+    ro = sub.add_parser("run-once", help="run the workflow once now (manual trigger)")
+    ro.add_argument(
+        "--review",
+        action="store_true",
+        help="human-in-the-loop: pause for approval before finishing",
     )
+    ro.set_defaults(func=_run_once)
+
+    rr = sub.add_parser("resume-run", help="resume a run awaiting human input")
+    rr.add_argument("run_id")
+    rr.add_argument("--decision", required=True, choices=["approve", "redo"])
+    rr.add_argument("--feedback", default=None, help="feedback to use with --decision redo")
+    rr.set_defaults(func=_resume_run)
+
+    sub.add_parser(
+        "checkpointer-setup",
+        help="create the LangGraph checkpoint tables (run once, like a migration)",
+    ).set_defaults(func=_checkpointer_setup)
 
     add = sub.add_parser("add-schedule", help="create a schedule")
     add.add_argument("--cron", required=True, help='5-field cron, e.g. "0 6 * * *"')

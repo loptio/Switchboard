@@ -101,3 +101,82 @@ def test_set_password_dispatches(monkeypatch, capsys):
     assert cli.main(["set-password", "--username", "admin"]) == 0
     assert captured["username"] == "admin"
     assert "updated password for admin" in capsys.readouterr().out
+
+
+# --- human-in-the-loop CLI (Unit 3) ----------------------------------------
+
+from orchestrator import ReviewOutcome  # noqa: E402
+
+
+def test_run_once_review_suspended_reports_and_hints(monkeypatch, capsys):
+    run = _run(id="rX", status="awaiting_input")
+    payload = {"digest": {"items": [{"title": "T", "one_line_summary": "S"}]}, "issues": []}
+    monkeypatch.setattr(
+        runner, "run_review_once",
+        lambda **kw: (run, ReviewOutcome(status="suspended", payload=payload)),
+    )
+    assert cli.main(["run-once", "--review"]) == 0
+    out = capsys.readouterr().out
+    assert "awaiting_input" in out and "S" in out and "resume-run rX" in out
+
+
+def test_run_once_review_completed(monkeypatch, capsys):
+    run = _run(id="rY", status="success")
+    monkeypatch.setattr(
+        runner, "run_review_once",
+        lambda **kw: (run, ReviewOutcome(status="completed", digest=None)),
+    )
+    monkeypatch.setattr(db, "list_outputs", lambda run_id: [])
+    assert cli.main(["run-once", "--review"]) == 0
+    assert "success" in capsys.readouterr().out
+
+
+def test_run_once_review_failed_returns_nonzero(monkeypatch):
+    run = _run(status="failed", error="boom")
+    monkeypatch.setattr(runner, "run_review_once", lambda **kw: (run, None))
+    assert cli.main(["run-once", "--review"]) == 1
+
+
+def test_resume_run_approve_dispatches(monkeypatch, capsys):
+    seen = {}
+    run = _run(id="rZ", status="success")
+
+    def fake_resume(run_id, decision, **kw):
+        seen.update(run_id=run_id, decision=decision)
+        return run, ReviewOutcome(status="completed", digest=None)
+
+    monkeypatch.setattr(runner, "resume_run", fake_resume)
+    monkeypatch.setattr(db, "list_outputs", lambda run_id: [])
+    assert cli.main(["resume-run", "rZ", "--decision", "approve"]) == 0
+    assert seen["run_id"] == "rZ" and seen["decision"] == {"action": "approve"}
+
+
+def test_resume_run_redo_passes_feedback(monkeypatch):
+    seen = {}
+    run = _run(id="rW", status="awaiting_input")
+
+    def fake_resume(run_id, decision, **kw):
+        seen["decision"] = decision
+        return run, ReviewOutcome(status="suspended", payload={"digest": {"items": []}, "issues": []})
+
+    monkeypatch.setattr(runner, "resume_run", fake_resume)
+    assert cli.main(["resume-run", "rW", "--decision", "redo", "--feedback", "more"]) == 0
+    assert seen["decision"] == {"action": "redo", "feedback": "more"}
+
+
+def test_resume_run_error_returns_nonzero(monkeypatch):
+    def fake_resume(run_id, decision, **kw):
+        raise LookupError("no such run")
+
+    monkeypatch.setattr(runner, "resume_run", fake_resume)
+    assert cli.main(["resume-run", "bad", "--decision", "approve"]) == 1
+
+
+def test_checkpointer_setup_dispatches(monkeypatch, capsys):
+    import checkpoint
+
+    called = []
+    monkeypatch.setattr(checkpoint, "run_setup", lambda: called.append(True))
+    assert cli.main(["checkpointer-setup"]) == 0
+    assert called == [True]
+    assert "ready" in capsys.readouterr().out

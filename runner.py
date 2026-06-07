@@ -14,24 +14,30 @@ the pipeline raises. Email is attempted AFTER the digest is saved and the run is
 marked success; a failure there is logged but never fails the run or raises
 (graceful degradation — the digest is already persisted, brief sec.10.3).
 
-Two entry points share one pipeline body (_run_pipeline):
-- run_once(): create + execute inline (CLI, scheduler).
+Entry points, all sharing one `_finalize` (render/store/email/mark_success):
+- run_once(): create + execute the non-interactive pipeline inline (CLI, scheduler).
 - execute_claimed_run(): execute a run the worker already claimed — the manual-
   trigger handoff, where the web wrote a pending Run and the worker picks it up.
+- run_review_once() / resume_run(): the OPTIONAL human-in-the-loop path (Phase 5
+  Unit 3) — start an interruptible run that suspends at a review gate
+  (status=awaiting_input, state held by a checkpointer), then resume it with a
+  human decision. Worker-side only; digest scheduled/handoff runs never use it.
 """
 
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import date, datetime
 
+import checkpoint
 import db
 from agent import Digest
 from config import Config, load_config
 from fetch import fetch_feed
 from mailer import send_digest
-from orchestrator import build_digest
+from orchestrator import ReviewOutcome, build_digest, resume_review_run, start_review_run
 from output import render_markdown, write_digest
 
 log = logging.getLogger(__name__)
@@ -46,19 +52,16 @@ def _digest_to_data(digest: Digest, feed_url: str, day: date) -> dict:
     }
 
 
-def _run_pipeline(
-    run: db.Run, cfg: Config, now: datetime | None
-) -> db.Run:
-    """Run the pipeline for an already-running `run`; record success/failure.
+def _finalize(run: db.Run, digest: Digest, cfg: Config, now: datetime | None) -> db.Run:
+    """Finish a run from a final `digest`: render → write local file → save Output
+    → mark success → email (graceful). Shared by the normal completion path and the
+    human-in-the-loop resume path.
 
-    Never raises: a pipeline failure is caught, recorded (status=failed) and the
-    failed Run returned, so one bad run never crashes the caller (scheduler tick).
-    The run must already be in the `running` state (run_once marks it; the worker
-    drain claims it). Shared by both entry points so there is one pipeline body.
+    Never raises: a render/write/store failure is recorded (status=failed) and the
+    failed Run returned. Email is a side delivery — the digest is already saved and
+    the run is success; a failure there is logged, never fatal.
     """
     try:
-        items = fetch_feed(cfg.feed_url)
-        digest = build_digest(items, cfg.count, cfg.model)
         day = now.date() if now is not None else date.today()
         markdown = render_markdown(digest, cfg.feed_url, day)
         # Phase 1 behaviour preserved: still write the local markdown file...
@@ -72,22 +75,35 @@ def _run_pipeline(
             now=now,
         )
     except Exception as exc:
-        log.exception("run %s failed", run.id)
+        log.exception("run %s failed during finalize", run.id)
         return db.mark_failed(run.id, str(exc), now=now)
 
     final = db.mark_success(run.id, now=now)
     log.info("run %s succeeded (%d items)", run.id, len(digest.items))
-
-    # Email is a side delivery: the digest is already saved and the run is
-    # success. A failure here is logged, never fatal (graceful degradation).
     try:
         send_digest(digest)
     except Exception as exc:
         log.warning(
             "run %s: email delivery failed (digest still saved): %s", run.id, exc
         )
-
     return final
+
+
+def _run_pipeline(run: db.Run, cfg: Config, now: datetime | None) -> db.Run:
+    """Run the (non-interactive) pipeline for an already-running `run`.
+
+    Never raises: a failure is caught, recorded (status=failed) and the failed Run
+    returned, so one bad run never crashes the caller (scheduler tick). The run
+    must already be in the `running` state (run_once marks it; the worker drain
+    claims it). Shared by run_once and execute_claimed_run.
+    """
+    try:
+        items = fetch_feed(cfg.feed_url)
+        digest = build_digest(items, cfg.count, cfg.model)
+    except Exception as exc:
+        log.exception("run %s failed", run.id)
+        return db.mark_failed(run.id, str(exc), now=now)
+    return _finalize(run, digest, cfg, now)
 
 
 def run_once(
@@ -123,3 +139,114 @@ def execute_claimed_run(
     cfg = config or load_config()
     log.info("run %s claimed for execution (trigger=%s)", run.id, run.trigger)
     return _run_pipeline(run, cfg, now)
+
+
+# --- human-in-the-loop: interruptible run + resume (Phase 5 Unit 3) ----------
+# Worker-side only. The web tier never calls these (they load langgraph). digest
+# scheduled/handoff runs use the non-interactive path above (no checkpoint).
+
+
+def _checkpointer_cm(checkpointer):
+    """A context manager yielding the checkpointer. Injected (tests: an open
+    InMemorySaver) → used as-is; None (runtime) → open a PostgresSaver bound to the
+    app DB for the duration of the call."""
+    if checkpointer is not None:
+        return nullcontext(checkpointer)
+    return checkpoint.make_pg_checkpointer()
+
+
+def _agent_kwargs(summarize_fn, verify_fn) -> dict:
+    kw = {}
+    if summarize_fn is not None:
+        kw["summarize_fn"] = summarize_fn
+    if verify_fn is not None:
+        kw["verify_fn"] = verify_fn
+    return kw
+
+
+def _apply_outcome(
+    run: db.Run, outcome: ReviewOutcome, cfg: Config, now: datetime | None
+) -> tuple[db.Run, ReviewOutcome]:
+    if outcome.status == "suspended":
+        suspended = db.mark_awaiting_input(run.id)
+        log.info("run %s suspended for human review (awaiting_input)", run.id)
+        return suspended, outcome
+    return _finalize(run, outcome.digest, cfg, now), outcome
+
+
+def run_review_once(
+    *,
+    workflow: str = "news",
+    config: Config | None = None,
+    now: datetime | None = None,
+    checkpointer=None,
+    summarize_fn=None,
+    verify_fn=None,
+) -> tuple[db.Run, ReviewOutcome | None]:
+    """Create an interruptible run (human-review gate ON) and start it.
+
+    Returns (Run, ReviewOutcome|None). On suspend → the Run is `awaiting_input`
+    (graph state held by the checkpointer under thread_id == run.id) and the
+    outcome carries the review payload; resume later via `resume_run`. On
+    completion → the digest is finalized (rendered/stored/emailed) and the Run is
+    `success`. A failure is recorded (status=failed) and (Run, None) returned.
+    """
+    cfg = config or load_config()
+    run = db.create_run(workflow=workflow, trigger="manual", now=now)
+    db.mark_running(run.id, now=now)
+    log.info("run %s started (trigger=manual, human-review)", run.id)
+    try:
+        with _checkpointer_cm(checkpointer) as cp:
+            items = fetch_feed(cfg.feed_url)
+            outcome = start_review_run(
+                items,
+                cfg.count,
+                cfg.model,
+                thread_id=run.id,
+                checkpointer=cp,
+                **_agent_kwargs(summarize_fn, verify_fn),
+            )
+            return _apply_outcome(run, outcome, cfg, now)
+    except Exception as exc:
+        log.exception("run %s failed", run.id)
+        return db.mark_failed(run.id, str(exc), now=now), None
+
+
+def resume_run(
+    run_id: str,
+    decision: dict,
+    *,
+    config: Config | None = None,
+    now: datetime | None = None,
+    checkpointer=None,
+    summarize_fn=None,
+    verify_fn=None,
+) -> tuple[db.Run, ReviewOutcome | None]:
+    """Resume a suspended (`awaiting_input`) run with a human decision.
+
+    `decision` e.g. {"action": "approve"} or {"action": "redo", "feedback": "..."}.
+    Re-injects the agents + thread_id (callables are not persisted). On approve →
+    finalize (success). On redo → a fresh bounded auto-loop, re-presented
+    (awaiting_input again). Returns (Run, ReviewOutcome|None). Raises LookupError
+    if the run is missing, ValueError if it is not awaiting_input.
+    """
+    cfg = config or load_config()
+    run = db.get_run(run_id)
+    if run is None:
+        raise LookupError(f"No run with id {run_id!r}")
+    if run.status != "awaiting_input":
+        raise ValueError(f"run {run_id} is {run.status!r}, not awaiting_input")
+    db.update_run_status(run_id, "running")
+    log.info("run %s resumed (decision=%s)", run_id, decision.get("action"))
+    try:
+        with _checkpointer_cm(checkpointer) as cp:
+            outcome = resume_review_run(
+                thread_id=run_id,
+                checkpointer=cp,
+                decision=decision,
+                **_agent_kwargs(summarize_fn, verify_fn),
+            )
+            return _apply_outcome(run, outcome, cfg, now)
+    except Exception as exc:
+        log.exception("run %s failed during resume", run_id)
+        return db.mark_failed(run_id, str(exc), now=now), None

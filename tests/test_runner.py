@@ -12,7 +12,7 @@ import pytest
 
 import db
 import runner
-from agent import Digest, DigestItem
+from agent import Critique, Digest, DigestItem
 from config import Config
 from fetch import FeedItem
 
@@ -96,3 +96,61 @@ def test_run_once_pipeline_failure_records_failed(database, tmp_path, monkeypatc
     assert run.status == "failed"
     assert "network down" in run.error
     assert db.list_outputs(run.id) == []  # nothing saved on failure
+
+
+# --- human-in-the-loop: review-run + resume (Unit 3) -----------------------
+
+
+def _summarize_pass(items, n, model, *, feedback=None):
+    return FAKE_DIGEST
+
+
+def _verify_pass(digest, items, model):
+    return Critique(passed=True, issues=[])
+
+
+def test_review_run_suspends_then_resume_approve_finalizes(database, tmp_path, monkeypatch):
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    monkeypatch.setattr(runner, "fetch_feed", lambda url: FAKE_ITEMS)
+    sent = []
+    monkeypatch.setattr(runner, "send_digest", lambda d: sent.append(d))
+    saver = InMemorySaver()  # one store shared by suspend + resume
+    cfg = _cfg(tmp_path)
+
+    run, outcome = runner.run_review_once(
+        config=cfg, now=T0, checkpointer=saver,
+        summarize_fn=_summarize_pass, verify_fn=_verify_pass,
+    )
+    # suspended at the review gate: nothing finalized yet.
+    assert run.status == "awaiting_input"
+    assert outcome.status == "suspended"
+    assert outcome.payload["digest"]["items"][0]["one_line_summary"] == "one"
+    assert db.list_outputs(run.id) == []
+    assert sent == []
+
+    run2, outcome2 = runner.resume_run(
+        run.id, {"action": "approve"}, config=cfg, now=T0, checkpointer=saver,
+        summarize_fn=_summarize_pass, verify_fn=_verify_pass,
+    )
+    assert outcome2.status == "completed"
+    assert run2.status == "success"
+    outs = db.list_outputs(run.id)
+    assert len(outs) == 1 and "one" in outs[0].content
+    assert (tmp_path / "digest-2026-06-07.md").exists()  # local file written on finalize
+    assert sent == [FAKE_DIGEST]  # emailed once, on finalize
+
+
+def test_resume_run_rejects_non_awaiting(database, tmp_path):
+    run = db.create_run(now=T0)  # pending, not awaiting_input
+    with pytest.raises(ValueError):
+        runner.resume_run(run.id, {"action": "approve"}, config=_cfg(tmp_path))
+
+
+def test_resume_run_missing_raises(database, tmp_path):
+    with pytest.raises(LookupError):
+        runner.resume_run(
+            "00000000-0000-0000-0000-000000000000",
+            {"action": "approve"},
+            config=_cfg(tmp_path),
+        )
