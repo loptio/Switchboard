@@ -3,9 +3,11 @@
 One command = fetch one RSS feed → summarize it with a Claude agent → write a
 local markdown digest and print it to the console.
 
-This is **Phase 1** of a larger agent system: a single, sequential vertical
-slice. No database, scheduling, notifications, web UI, or multi-provider models
-— those are later phases by design.
+This began as **Phase 1** of a larger agent system: a single, sequential
+vertical slice (no database, scheduling, notifications, or web UI). **Phase 2 is
+now in progress** — the data layer below (Unit 1) adds a PostgreSQL source of
+truth. Scheduling, notifications, web UI, and multi-provider models remain later
+phases by design.
 
 ## How it works
 
@@ -103,3 +105,71 @@ Intentionally minimal per the Phase 1 scope:
   readability of titles like `Show HN: foo [pdf]`).
 - If the agent returns fewer items than requested, the digest reflects what was
   returned (graceful) rather than failing the whole run.
+
+## Phase 2 — Database foundation (Unit 1)
+
+Phase 2 makes the database the system's source of truth. **Unit 1 (this slice)**
+adds the schema and a **data-access layer** — the only place the rest of the
+system touches the DB. The scheduler (Unit 2) and email push (Unit 3) build on
+this contract and are **not** part of Unit 1.
+
+### Tables
+
+| Table       | Purpose                                                              |
+| ----------- | ------------------------------------------------------------------- |
+| `runs`      | one execution of a workflow (status, trigger, timing, error)        |
+| `outputs`   | an artifact of a run — the rendered digest (+ optional structured data) |
+| `schedules` | a declarative cron schedule for a workflow                          |
+
+All access goes through the `db` package — e.g. `from db import create_run,
+save_output, update_run_status, list_due_schedules`. Callers get plain
+dataclasses (`Run`, `Output`, `Schedule`); SQL never leaks out of `db/`.
+
+### Database setup
+
+Unit 1 targets **PostgreSQL** at runtime. Credentials come from the environment
+only (never code/Git):
+
+```bash
+# In your .env (copy from .env.example) or your shell:
+export DATABASE_URL='postgresql+psycopg://user:password@localhost:5432/agent'
+```
+
+Install deps (now includes the DB stack) and create the schema with migrations:
+
+```bash
+.venv/bin/pip install -r requirements.txt   # adds SQLAlchemy, alembic, psycopg
+.venv/bin/python -m alembic upgrade head     # creates the tables
+```
+
+`alembic/env.py` reads `DATABASE_URL` from the environment — the URL is never
+stored in `alembic.ini`.
+
+### Tests (offline)
+
+The data-layer tests run fully offline against in-memory SQLite — no PostgreSQL,
+no network — so `pytest` works anywhere (same style as Phase 1):
+
+```bash
+.venv/bin/python -m pytest
+```
+
+To run the **same** suite against real PostgreSQL (dialect fidelity), point it
+at a throwaway database:
+
+```bash
+export TEST_DATABASE_URL='postgresql+psycopg://user:password@localhost:5432/agent_test'
+.venv/bin/python -m pytest tests/test_db.py
+```
+
+### Scope / notes (Unit 1)
+
+- No scheduler or email yet — those are Units 2 and 3; Unit 1 is the DB contract
+  they depend on. (An always-on local process and the "your computer must be on"
+  caveat arrive with the scheduler; cloud hosting is Phase 3.)
+- The data layer stores `next_run_at` for schedules but does not compute it from
+  cron — that belongs to the scheduler (Unit 2). `list_due_schedules(now)`
+  returns enabled schedules due by `next_run_at` (a NULL counts as due).
+- Timestamps are stored and returned as UTC. SQLite drops timezones, so the
+  layer normalizes every datetime to UTC before writing/comparing — pass
+  timezone-aware UTC datetimes.
