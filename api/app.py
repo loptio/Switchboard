@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from api.routers import auth
+from api.routers import auth, runs
 from api.settings import APISettings, load_settings
 
 
@@ -52,6 +52,7 @@ def create_app(settings: APISettings | None = None) -> FastAPI:
         return {"status": "ok"}
 
     app.include_router(auth.router)
+    app.include_router(runs.router)
     return app
 
 
