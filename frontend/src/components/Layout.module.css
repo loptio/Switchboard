@@ -1,0 +1,79 @@
+.shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-6);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  flex-wrap: wrap;
+}
+
+.brand {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.nav {
+  display: flex;
+  gap: var(--space-2);
+  flex: 1;
+}
+
+.navLink {
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  font-weight: 600;
+  font-size: 14px;
+}
+.navLink:hover {
+  background: var(--color-bg);
+  text-decoration: none;
+}
+.active {
+  color: var(--color-primary);
+  background: var(--status-running-bg);
+}
+
+.user {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.username {
+  font-size: 14px;
+  color: var(--color-text-muted);
+}
+
+.main {
+  flex: 1;
+  width: 100%;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: var(--space-6);
+}
+
+/* Phone: stack the bar, let nav span full width (monitoring-first). */
+@media (max-width: 640px) {
+  .header {
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+  }
+  .brand {
+    width: 100%;
+  }
+  .nav {
+    order: 3;
+    width: 100%;
+    flex: none;
+  }
+  .main {
+    padding: var(--space-4);
+  }
+}

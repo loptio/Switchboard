@@ -1,11 +1,28 @@
-// Scaffold shell — replaced by the real auth-gated app (routes + AuthProvider)
-// in the next commits. Kept minimal so the toolchain (Vite/TS/Vitest) is wired
-// and verifiable on its own first.
+import { Navigate, Route, Routes } from "react-router-dom";
+
+import { AuthProvider } from "./auth/AuthContext";
+import { LoginPage } from "./auth/LoginPage";
+import { RequireAuth } from "./auth/RequireAuth";
+import { Layout } from "./components/Layout";
+
+// Placeholder until the real pages land in the next commits.
+function Placeholder({ title }: { title: string }) {
+  return <p>{title} — coming next.</p>;
+}
+
 export default function App() {
   return (
-    <main style={{ padding: 24 }}>
-      <h1>Agent Control Plane</h1>
-      <p>Frontend scaffold is up. Wiring auth, runs, and schedules next.</p>
-    </main>
+    <AuthProvider>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route element={<RequireAuth />}>
+          <Route element={<Layout />}>
+            <Route path="/" element={<Placeholder title="Runs dashboard" />} />
+            <Route path="/schedules" element={<Placeholder title="Schedules" />} />
+          </Route>
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </AuthProvider>
   );
 }
