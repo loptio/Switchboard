@@ -9,6 +9,7 @@ never import SQLAlchemy or touch the tables directly elsewhere:
 from __future__ import annotations
 
 from .dao import (
+    claim_next_pending_run,
     create_run,
     create_schedule,
     create_user,
@@ -50,6 +51,7 @@ __all__ = [
     "mark_failed",
     "get_run",
     "list_runs",
+    "claim_next_pending_run",
     # outputs
     "save_output",
     "list_outputs",

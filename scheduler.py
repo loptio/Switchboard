@@ -1,9 +1,11 @@
-"""Scheduler — fire the runner for due schedules, with APScheduler as the heartbeat.
+"""Scheduler — the worker heartbeat: fire due schedules AND drain pending runs.
 
-Model (route A): a single APScheduler interval job ticks every TICK_SECONDS and
-calls run_due_schedules(now). Each due schedule (db.list_due_schedules) runs once
-and its next_run_at is advanced to the next cron fire STRICTLY AFTER now — so a
-process that missed several windows catches up exactly once, not N times.
+Model (route A): a single APScheduler interval job ticks every TICK_SECONDS. Each
+tick does two things: run_due_schedules(now) fires scheduled workflows whose time
+has come, and run_pending_runs(now) drains any pending runs the web tier enqueued
+as manual triggers (the handoff). Each due schedule (db.list_due_schedules) runs
+once and its next_run_at is advanced to the next cron fire STRICTLY AFTER now — so
+a process that missed several windows catches up exactly once, not N times.
 
 The DB is the source of truth: schedules can be added/removed without restarting
 (picked up on the next tick). All timing logic lives in pure functions with an
@@ -57,8 +59,29 @@ def run_due_schedules(now: datetime) -> list[str]:
     return ran
 
 
+def run_pending_runs(now: datetime) -> list[str]:
+    """Drain pending runs (e.g. manual triggers the web enqueued): claim one,
+    execute it, repeat until none remain. Returns the ids that ran.
+
+    This is the worker half of the manual-trigger handoff. The claim is atomic
+    (db.claim_next_pending_run): a run another worker grabbed first is simply not
+    returned to us, so we never double-execute. Looping drains a backlog (several
+    triggers between ticks) in a single tick instead of one-per-tick.
+    """
+    ran: list[str] = []
+    while True:
+        run = db.claim_next_pending_run(now=now)
+        if run is None:
+            break
+        runner.execute_claimed_run(run, now=now)
+        ran.append(run.id)
+    return ran
+
+
 def _tick() -> None:
-    run_due_schedules(_utc_now())
+    now = _utc_now()
+    run_due_schedules(now)  # scheduled workflows whose time has come
+    run_pending_runs(now)  # manual triggers the web enqueued as pending runs
 
 
 def build_scheduler(scheduler: BlockingScheduler | None = None) -> BlockingScheduler:

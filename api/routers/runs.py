@@ -11,13 +11,23 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 import db
 from api.deps import get_current_user, require_csrf
-from api.schemas import OutputOut, RunOut
+from api.schemas import OutputOut, RunCreate, RunOut
 
 router = APIRouter(
     prefix="/runs",
     tags=["runs"],
     dependencies=[Depends(get_current_user), Depends(require_csrf)],
 )
+
+
+@router.post("", response_model=RunOut, status_code=status.HTTP_202_ACCEPTED)
+def trigger_run(body: RunCreate | None = None) -> db.Run:
+    """Manual trigger — the web HANDOFF. Write a pending Run and return 202; the
+    worker (scheduler heartbeat) claims and executes it. The web process never
+    runs the agent here: it only records intent in the DB. See README "Phase 3".
+    """
+    workflow = body.workflow if body is not None else "news"
+    return db.create_run(workflow=workflow, trigger="manual")
 
 
 @router.get("", response_model=list[RunOut])

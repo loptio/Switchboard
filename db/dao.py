@@ -170,6 +170,43 @@ def list_runs(
     return [Run.from_row(r) for r in rows]
 
 
+def claim_next_pending_run(*, now: datetime | None = None) -> Run | None:
+    """Atomically claim the oldest pending Run (status pending -> running) and
+    return it, or None when there are no pending runs.
+
+    This is the worker side of the manual-trigger handoff: the web tier writes a
+    pending Run (create_run) and the worker claims it here. The claim is a guarded
+    UPDATE (WHERE id=? AND status='pending'); if another worker grabbed that row
+    first (rowcount 0) we move on to the next pending row — so a run is executed
+    exactly once even with overlapping ticks or multiple workers.
+    """
+    moment = _to_utc(now) if now is not None else _now()
+    with get_engine().begin() as conn:
+        while True:
+            row = conn.execute(
+                select(runs.c.id)
+                .where(runs.c.status == "pending")
+                .order_by(runs.c.created_at.asc())
+                .limit(1)
+            ).first()
+            if row is None:
+                return None
+            run_id = row[0]
+            claimed = conn.execute(
+                update(runs)
+                .where(runs.c.id == run_id, runs.c.status == "pending")
+                .values(status="running", started_at=moment)
+            )
+            if claimed.rowcount == 1:
+                stored = (
+                    conn.execute(select(runs).where(runs.c.id == run_id))
+                    .mappings()
+                    .one()
+                )
+                return Run.from_row(stored)
+            # rowcount 0: lost the race for this row — try the next pending one.
+
+
 # --- Outputs --------------------------------------------------------------
 
 def save_output(

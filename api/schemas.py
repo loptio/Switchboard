@@ -28,7 +28,12 @@ class UserOut(BaseModel):
     username: str
 
 
-# --- runs / outputs (read) -------------------------------------------------
+# --- runs / outputs --------------------------------------------------------
+
+class RunCreate(BaseModel):
+    # Manual trigger payload — optional; defaults to the news workflow.
+    workflow: str = "news"
+
 
 class RunOut(BaseModel):
     model_config = _FROM_RECORD
