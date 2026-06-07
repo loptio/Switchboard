@@ -11,5 +11,14 @@ psycopg[binary]>=3.1,<4  # PostgreSQL driver (runtime only)
 # Phase 2 — scheduler (Unit 2). In-process cron heartbeat.
 APScheduler>=3.10,<4     # triggers the runner on schedule
 
+# Phase 3 — control-plane API (Unit 1). The web process imports ONLY `db`; it
+# never imports runner/agent, so the Claude Agent SDK stays out of the web tier.
+fastapi>=0.110,<1        # REST API + automatic OpenAPI (the front/back contract)
+uvicorn[standard]>=0.27  # ASGI server for local serving (uvicorn api.app:app)
+passlib[bcrypt]>=1.7,<2  # password hashing (bcrypt) — never hand-rolled crypto
+bcrypt>=4.0,<4.1         # pinned: passlib 1.7.4's version probe trips on bcrypt>=4.1
+itsdangerous>=2.0,<3     # signs the session cookie (Starlette SessionMiddleware)
+
 # Dev / test
 pytest              # fetch-module test
+httpx               # FastAPI TestClient backend (offline API tests)
