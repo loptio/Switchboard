@@ -21,6 +21,14 @@ Everything is bounded: at most (max_redos+1) summarizer calls and at most
 (max_redos+1)×MAX_VERIFY_ATTEMPTS verifier calls. No path loops forever or ships
 schema-dirty data.
 
+Human-in-the-loop (Phase 5 Unit 3, OPTIONAL): after the auto-loop produces a
+verified digest, an optional `human_review` gate `interrupt()`s and hands the
+digest to a human (`start_review_run`); the graph suspends, its state persisted
+by a checkpointer under thread_id == run_id. `resume_review_run` injects the
+decision — approve (→ finish) or redo+feedback (→ a fresh bounded auto-loop, then
+re-present). The digest default runs with the gate OFF (review=False, no
+checkpointer) — `build_digest` is unchanged.
+
 **State is JSON-native (dict-state), NOT dataclasses** (Phase 5 Unit 3): the
 checkpointer (human-in-the-loop suspend/resume) serializes the state, and
 LangGraph's serializer only round-trips arbitrary dataclasses via a deprecated,
@@ -40,10 +48,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
 
 from agent import (
     AgentContractError,
@@ -187,6 +196,8 @@ class _State(TypedDict):
     digest: dict | None  # serialized Digest — most recent valid candidate (retained)
     summarize_ok: bool
     result: dict | None  # serialized Digest — set only by a terminal node; the answer
+    review: bool  # human-in-the-loop gate on? (digest default: False)
+    approved: bool  # has the human approved the current digest?
 
 
 def _summarize_node(state: _State, config) -> dict:
@@ -218,15 +229,18 @@ def _verify_node(state: _State, config) -> dict:
     if critique is None:
         # Verifier couldn't produce a valid review: accept the summarizer-validated
         # digest (degrades to pre-Phase-5 quality, never masks a fail as a pass).
+        # Clear feedback: no concrete open issues to carry into a human-review gate.
         log.warning(
             "verification inconclusive (attempt %d); accepting "
             "summarizer-validated digest",
             attempt,
         )
-        return {"result": state["digest"]}
+        return {"result": state["digest"], "feedback": None}
     if critique.passed:
+        # Clean pass — clear any stale feedback from earlier redos so a human-review
+        # gate shows zero open issues.
         log.info("digest accepted on attempt %d", attempt)
-        return {"result": state["digest"]}
+        return {"result": state["digest"], "feedback": None}
     log.info(
         "digest rejected on attempt %d (%d issue(s)); redoing",
         attempt,
@@ -248,10 +262,38 @@ def _accept_last_node(state: _State) -> dict:
 
 
 def _finalize_gate_node(state: _State) -> dict:
-    # No-op convergence point for every "we have a result" terminal. Unit 3 makes
-    # this the optional human-review gate; for the digest default it passes straight
-    # to END.
+    # No-op convergence point for every "we have a result" terminal. The optional
+    # human-review gate branches off here; the digest default passes straight to END.
     return {}
+
+
+def _human_review_node(state: _State) -> dict:
+    # PURE before interrupt(): build the review payload from state only — no LLM,
+    # no DB write. LangGraph re-runs this node from the top on resume, so anything
+    # before interrupt() must be side-effect-free.
+    payload = {
+        "digest": state["digest"],  # candidate Digest (JSON) — the web-facing contract
+        "issues": (state["feedback"] or {}).get("issues", []),  # open critique issues
+    }
+    decision = interrupt(payload)
+    # --- resumed via Command(resume=decision) ---
+    action = decision.get("action") if isinstance(decision, dict) else decision
+    if action == "approve":
+        return {"approved": True}
+    # redo: reset for a fresh, fully-bounded auto-loop (attempt=0) carrying the
+    # human's feedback. Human redos are human-driven, not counted against max_redos.
+    text = decision.get("feedback") if isinstance(decision, dict) else None
+    feedback = (
+        _critique_to_dict(
+            Critique(
+                passed=False,
+                issues=[CritiqueIssue(index=None, kind="human", detail=text)],
+            )
+        )
+        if text
+        else None
+    )
+    return {"approved": False, "result": None, "attempt": 0, "feedback": feedback}
 
 
 def _route_after_summarize(state: _State) -> str:
@@ -274,6 +316,19 @@ def _route_after_verify(state: _State) -> str:
     return "accept_last"
 
 
+def _route_after_finalize_gate(state: _State) -> str:
+    # The optional human-review gate. digest default (review off) → straight to END.
+    if state.get("review") and not state.get("approved"):
+        return "human_review"
+    return "end"
+
+
+def _route_after_human_review(state: _State) -> str:
+    if state.get("approved"):
+        return "end"
+    return "summarize"  # human asked for a redo → fresh auto-loop with their feedback
+
+
 def _build_builder() -> StateGraph:
     """The single shared graph definition. Compiled without a checkpointer for the
     digest default (`_APP`), and with a checkpointer for interruptible runs."""
@@ -282,6 +337,7 @@ def _build_builder() -> StateGraph:
     g.add_node("verify", _verify_node)
     g.add_node("accept_last", _accept_last_node)
     g.add_node("finalize_gate", _finalize_gate_node)
+    g.add_node("human_review", _human_review_node)
     g.add_edge(START, "summarize")
     g.add_conditional_edges(
         "summarize",
@@ -299,14 +355,29 @@ def _build_builder() -> StateGraph:
         {"finalize_gate": "finalize_gate", "summarize": "summarize", "accept_last": "accept_last"},
     )
     g.add_edge("accept_last", "finalize_gate")
-    g.add_edge("finalize_gate", END)
+    g.add_conditional_edges(
+        "finalize_gate",
+        _route_after_finalize_gate,
+        {"human_review": "human_review", "end": END},
+    )
+    g.add_conditional_edges(
+        "human_review",
+        _route_after_human_review,
+        {"end": END, "summarize": "summarize"},
+    )
     return g
 
 
-_APP = _build_builder().compile()  # no checkpointer: the digest default runs straight through
+# One shared builder (the system's graph), compiled two ways: without a
+# checkpointer for the straight-through digest default, and — per interruptible
+# run — WITH an injected checkpointer for human-in-the-loop suspend/resume.
+_BUILDER = _build_builder()
+_APP = _BUILDER.compile()  # no checkpointer: the digest default runs straight through
 
 
-def _initial_state(items: list[FeedItem], n: int, model: str, max_redos: int) -> _State:
+def _initial_state(
+    items: list[FeedItem], n: int, model: str, max_redos: int, *, review: bool = False
+) -> _State:
     return {
         "items": [_feeditem_to_dict(it) for it in items],
         "n": n,
@@ -317,6 +388,8 @@ def _initial_state(items: list[FeedItem], n: int, model: str, max_redos: int) ->
         "digest": None,
         "summarize_ok": False,
         "result": None,
+        "review": review,
+        "approved": False,
     }
 
 
@@ -358,3 +431,97 @@ def build_digest(
             f"{max_redos + 1} attempt(s)"
         )
     return _digest_from_dict(final["result"])
+
+
+# --- human-in-the-loop: interruptible runs (Phase 5 Unit 3) -----------------
+
+
+@dataclass(frozen=True)
+class ReviewOutcome:
+    """Outcome of an interruptible run.
+
+    - status="suspended": paused at the human-review gate; `payload` is the
+      review contract {"digest": <Digest JSON>, "issues": [<critique issue JSON>]}
+      (the same shape a future web UI will render). State is persisted by the
+      checkpointer under the thread_id; resume with `resume_review_run`.
+    - status="completed": `digest` is the final, human-approved Digest.
+    """
+
+    status: str
+    payload: dict | None = None
+    digest: Digest | None = None
+
+
+def _outcome_from_state(final: dict, max_redos: int) -> ReviewOutcome:
+    interrupts = final.get("__interrupt__")
+    if interrupts:
+        return ReviewOutcome(status="suspended", payload=interrupts[0].value)
+    if final.get("result") is None:
+        raise RuntimeError(
+            "summarizer never produced a schema-valid digest after "
+            f"{max_redos + 1} attempt(s)"
+        )
+    return ReviewOutcome(status="completed", digest=_digest_from_dict(final["result"]))
+
+
+def start_review_run(
+    items: list[FeedItem],
+    n: int,
+    model: str,
+    *,
+    thread_id: str,
+    checkpointer,
+    max_redos: int = DEFAULT_MAX_REDOS,
+    summarize_fn: Callable[..., Digest] = summarize_agent,
+    verify_fn: Callable[..., Critique] = verify_agent,
+) -> ReviewOutcome:
+    """Run the graph with the human-review gate ON, persisting to `checkpointer`
+    under `thread_id`. Returns suspended (paused at the gate) or completed.
+
+    The auto summarize→verify→redo loop runs first; the human reviews the final,
+    already-verified digest. Requires a checkpointer (interrupt needs persistence).
+    """
+    if not items:
+        return ReviewOutcome(status="completed", digest=Digest(items=[]))
+    app = _BUILDER.compile(checkpointer=checkpointer)
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+            "summarize_fn": summarize_fn,
+            "verify_fn": verify_fn,
+        },
+        "recursion_limit": _recursion_limit(max_redos),
+    }
+    final = app.invoke(_initial_state(items, n, model, max_redos, review=True), config=config)
+    return _outcome_from_state(final, max_redos)
+
+
+def resume_review_run(
+    *,
+    thread_id: str,
+    checkpointer,
+    decision: dict,
+    max_redos: int = DEFAULT_MAX_REDOS,
+    summarize_fn: Callable[..., Digest] = summarize_agent,
+    verify_fn: Callable[..., Critique] = verify_agent,
+) -> ReviewOutcome:
+    """Resume a suspended run from its checkpoint, injecting `decision` into the
+    waiting interrupt() (e.g. {"action": "approve"} or
+    {"action": "redo", "feedback": "..."}).
+
+    Resume is a SEPARATE process, so the config (agents + thread_id) is RE-INJECTED
+    — callables are never persisted in the checkpoint. A human "redo" re-runs a
+    fresh bounded auto-loop and re-presents (status="suspended" again); "approve"
+    completes (status="completed").
+    """
+    app = _BUILDER.compile(checkpointer=checkpointer)
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+            "summarize_fn": summarize_fn,
+            "verify_fn": verify_fn,
+        },
+        "recursion_limit": _recursion_limit(max_redos),
+    }
+    final = app.invoke(Command(resume=decision), config=config)
+    return _outcome_from_state(final, max_redos)
