@@ -1,0 +1,7 @@
+# Runtime
+feedparser          # RSS fetching/parsing (deterministic, no agent)
+claude-agent-sdk    # Claude Agent SDK — summarization via subscription auth
+python-dotenv       # load configuration from .env
+
+# Dev / test
+pytest              # fetch-module test

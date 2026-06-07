@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Local config (never commit secrets or machine-specific config)
+.env
+
+# Generated digests — keep the directory, ignore daily outputs except the sample
+output/*.md
+!output/sample-digest.md
