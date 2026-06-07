@@ -77,6 +77,28 @@ def test_mark_helpers(database):
     assert ok.status == "success" and ok.finished_at == T0 + timedelta(seconds=3)
 
 
+def test_awaiting_input_in_statuses():
+    assert "awaiting_input" in db.RUN_STATUSES
+
+
+def test_awaiting_input_suspend_resume_lifecycle(database):
+    # Human-in-the-loop: running -> awaiting_input (suspend) -> running (resume).
+    run = db.create_run(now=T0)
+    started = T0 + timedelta(seconds=1)
+    db.update_run_status(run.id, "running", started_at=started)
+
+    suspended = db.mark_awaiting_input(run.id)
+    assert suspended.status == "awaiting_input"
+    assert suspended.started_at == started  # unchanged
+    assert suspended.finished_at is None  # not terminal
+
+    resumed = db.update_run_status(run.id, "running")
+    assert resumed.status == "running"
+    assert resumed.started_at == started  # still the original start
+    done = db.mark_success(run.id, now=T0 + timedelta(seconds=9))
+    assert done.status == "success"
+
+
 def test_list_runs_filters_and_order(database):
     a = db.create_run(workflow="news", now=T0)
     b = db.create_run(workflow="news", now=T0 + timedelta(seconds=1))

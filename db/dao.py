@@ -144,6 +144,16 @@ def mark_failed(run_id: str, error: str, *, now: datetime | None = None) -> Run:
     return update_run_status(run_id, "failed", finished_at=now or _now(), error=error)
 
 
+def mark_awaiting_input(run_id: str) -> Run:
+    """Convenience: status -> awaiting_input (human-in-the-loop suspend).
+
+    The run is paused at an interrupt waiting for a human decision; `resume-run`
+    transitions it back to running. No timestamp change: started_at was stamped
+    when the run first went running, and finished_at is for terminal states only.
+    """
+    return update_run_status(run_id, "awaiting_input")
+
+
 def get_run(run_id: str) -> Run | None:
     if not _is_uuid(run_id):
         return None

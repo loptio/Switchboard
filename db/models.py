@@ -31,7 +31,15 @@ metadata = MetaData()
 # Enum-like value sets, enforced by CHECK constraints below AND validated in the
 # data layer for clear errors. Defined here so schema, DAO and tests share one
 # definition.
-RUN_STATUSES: tuple[str, ...] = ("pending", "running", "success", "failed")
+# "awaiting_input" (Phase 5 Unit 3): a human-in-the-loop run is suspended at an
+# interrupt, its graph state held by the checkpointer, waiting for `resume-run`.
+RUN_STATUSES: tuple[str, ...] = (
+    "pending",
+    "running",
+    "success",
+    "failed",
+    "awaiting_input",
+)
 RUN_TRIGGERS: tuple[str, ...] = ("scheduled", "manual")
 
 # JSONB on Postgres (queryable), plain JSON elsewhere (SQLite stores it as TEXT).
