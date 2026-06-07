@@ -1,13 +1,19 @@
-"""Agent module — understanding/summarizing via the Claude Agent SDK.
-
-Contract (Phase 1 brief §4):
-    input  = list of FeedItems
-    output = a structured Digest: top N items, each {title, link, one_line_summary}
+"""Agent module — the agents and their output contracts.
 
 The actual model call lives in the `llm.complete` seam (the only module that
 imports the SDK); this module builds prompts and validates replies against their
-contracts. `summarize` receives the items as JSON and returns a JSON array of
-summaries; no tools are granted, so the run is deterministic and non-interactive.
+contracts. No tools are granted, so each run is deterministic and non-interactive.
+
+Three agents share that seam:
+- `summarize` (Phase 1): items -> Digest, lenient parsing. Still the standalone
+  `main.py` path; kept unchanged.
+- `summarize_agent` (Phase 5): items (+ optional reviewer feedback) -> Digest,
+  validated strictly by `parse_digest` (dirty output never flows downstream).
+- `verify_agent` (Phase 5): a candidate Digest + the SOURCE items -> a Critique
+  (checks each summary against its source item), validated by `parse_critique`.
+
+The Phase 5 pair is coordinated by `orchestrator.build_digest`; this module holds
+no control flow — just prompt-building, the model call, and contract validation.
 
 Auth: the SDK delegates to the Claude Code CLI, which uses your subscription.
 Do NOT set ANTHROPIC_API_KEY (that would bill the paid API).
@@ -16,6 +22,7 @@ Do NOT set ANTHROPIC_API_KEY (that would bill the paid API).
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from fetch import FeedItem
@@ -80,6 +87,22 @@ SYSTEM_PROMPT = (
     '{"title": str, "link": str, "one_line_summary": str}. '
     "Preserve each given title and link verbatim. Keep the input order. "
     "No prose, no markdown, no code fences."
+)
+
+VERIFIER_SYSTEM_PROMPT = (
+    "You are a meticulous fact-checking reviewer for a news digest. You receive "
+    "the SOURCE feed items and a CANDIDATE digest (one one-sentence summary per "
+    "item, same order). For EACH summary, check it ONLY against its source item "
+    "(title + summary text) — never your own world knowledge. Flag a summary that "
+    "states something the source does not support (hallucination), distorts or "
+    "misrepresents the source (summary_inaccurate), or drops the source's main "
+    "point (missing_item). "
+    'Respond with ONLY a JSON object: {"passed": bool, "issues": [{"index": int, '
+    '"kind": str, "detail": str}]}. "index" is the 1-based item number; "kind" is '
+    'one of ' + ", ".join(ISSUE_KINDS) + '; "detail" is a specific, actionable '
+    'reason. If every summary is faithful, return {"passed": true, "issues": []}; '
+    "otherwise set passed=false and list each problem. No prose, no markdown, no "
+    "code fences."
 )
 
 
@@ -226,3 +249,85 @@ def summarize(items: list[FeedItem], n: int, model: str) -> Digest:
         for obj in data
     ]
     return Digest(items=digest_items)
+
+
+# --- Phase 5 agents (coordinated by orchestrator.build_digest) --------------
+
+
+def _format_feedback(feedback: Critique) -> str:
+    """Render a reviewer Critique as a corrective instruction for a redo."""
+    lines = [
+        "Your previous digest was REJECTED by a reviewer. Fix these problems and "
+        "return the FULL corrected JSON array (same length, same order):"
+    ]
+    for issue in feedback.issues:
+        where = f"item {issue.index}" if issue.index else "overall"
+        lines.append(f"- [{where}] {issue.detail}")
+    return "\n".join(lines)
+
+
+def summarize_agent(
+    items: list[FeedItem],
+    n: int,
+    model: str,
+    *,
+    feedback: Critique | None = None,
+    llm: Callable[..., str] = complete,
+) -> Digest:
+    """Summarizer agent: items (+ optional reviewer feedback) -> validated Digest.
+
+    Reuses the tool-less prompt of `summarize`; on a redo it appends the reviewer's
+    critique so the model can correct specific items. The reply is validated by
+    `parse_digest` (strict) — a contract violation raises AgentContractError,
+    which the orchestrator handles (dirty data never ships). `llm` is injectable
+    so the orchestrator/tests can swap the model call without touching this code.
+    """
+    chosen = items[:n]
+    if not chosen:
+        return Digest(items=[])
+    prompt = _build_prompt(items, n)
+    if feedback is not None and feedback.issues:
+        prompt = f"{prompt}\n\n{_format_feedback(feedback)}"
+    raw = llm(prompt, system_prompt=SYSTEM_PROMPT, model=model)
+    return parse_digest(raw, chosen)
+
+
+def _build_verifier_prompt(digest: Digest, chosen: list[FeedItem]) -> str:
+    source = [
+        {"index": i, "title": it.title, "summary": it.summary}
+        for i, it in enumerate(chosen, start=1)
+    ]
+    candidate = [
+        {"index": i, "title": it.title, "one_line_summary": it.one_line_summary}
+        for i, it in enumerate(digest.items, start=1)
+    ]
+    return (
+        "SOURCE items:\n"
+        + json.dumps(source, ensure_ascii=False, indent=2)
+        + "\n\nCANDIDATE digest:\n"
+        + json.dumps(candidate, ensure_ascii=False, indent=2)
+        + "\n\nReview each candidate summary against the SOURCE item with the same "
+        "index."
+    )
+
+
+def verify_agent(
+    digest: Digest,
+    items: list[FeedItem],
+    model: str,
+    *,
+    llm: Callable[..., str] = complete,
+) -> Critique:
+    """Verifier agent: candidate Digest + SOURCE items -> validated Critique.
+
+    Checks each summary against its source item (not by feel). The reply is
+    validated by `parse_critique` (strict); a malformed review raises
+    AgentContractError, which the orchestrator handles (bounded re-verify). `llm`
+    is injectable for model-swap / offline tests.
+    """
+    if not digest.items:
+        return Critique(passed=True, issues=[])  # nothing to review
+    chosen = items[: len(digest.items)]  # the source items that were summarized
+    prompt = _build_verifier_prompt(digest, chosen)
+    raw = llm(prompt, system_prompt=VERIFIER_SYSTEM_PROMPT, model=model)
+    return parse_critique(raw)

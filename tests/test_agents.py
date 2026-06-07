@@ -11,11 +11,17 @@ import json
 import pytest
 
 from agent import (
+    SYSTEM_PROMPT,
+    VERIFIER_SYSTEM_PROMPT,
     AgentContractError,
     Critique,
+    CritiqueIssue,
     Digest,
+    DigestItem,
     parse_critique,
     parse_digest,
+    summarize_agent,
+    verify_agent,
 )
 from fetch import FeedItem
 
@@ -176,3 +182,106 @@ def test_parse_critique_lenient_kind_and_index():
     assert c.issues[0].kind == "weird-kind"
     assert c.issues[1].index is None  # missing
     assert c.issues[1].kind == "unspecified"
+
+
+# --- agent functions (injected fake llm, fully offline) --------------------
+
+
+class FakeLLM:
+    """Records each call and returns scripted replies in order."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.calls = []
+
+    def __call__(self, prompt, *, system_prompt, model):
+        self.calls.append(
+            {"prompt": prompt, "system_prompt": system_prompt, "model": model}
+        )
+        return self.replies.pop(0)
+
+
+def test_summarize_agent_happy_path_uses_source_title_link():
+    # Model echoes bogus title/link; the agent uses source values, keeps summaries.
+    llm = FakeLLM(
+        _digest_reply(
+            [
+                {"title": "x", "link": "y", "one_line_summary": "sum a"},
+                {"title": "z", "link": "w", "one_line_summary": "sum b"},
+            ]
+        )
+    )
+    digest = summarize_agent(SRC, 2, "m", llm=llm)
+    assert [(i.title, i.link, i.one_line_summary) for i in digest.items] == [
+        ("Title A", "https://e/a", "sum a"),
+        ("Title B", "https://e/b", "sum b"),
+    ]
+    assert llm.calls[0]["system_prompt"] == SYSTEM_PROMPT
+    assert "Title A" in llm.calls[0]["prompt"]  # source items embedded in prompt
+
+
+def test_summarize_agent_empty_items_no_llm_call():
+    llm = FakeLLM()  # no replies queued; must not be invoked
+    assert summarize_agent([], 2, "m", llm=llm) == Digest(items=[])
+    assert llm.calls == []
+
+
+def test_summarize_agent_appends_feedback_on_redo():
+    llm = FakeLLM(
+        _digest_reply(
+            [{"one_line_summary": "fixed a"}, {"one_line_summary": "fixed b"}]
+        )
+    )
+    fb = Critique(
+        passed=False,
+        issues=[CritiqueIssue(index=1, kind="summary_inaccurate", detail="too vague")],
+    )
+    summarize_agent(SRC, 2, "m", feedback=fb, llm=llm)
+    assert "REJECTED" in llm.calls[0]["prompt"]
+    assert "too vague" in llm.calls[0]["prompt"]
+
+
+def test_summarize_agent_dirty_output_raises():
+    llm = FakeLLM(_digest_reply([{"one_line_summary": "only one"}]))  # wrong count
+    with pytest.raises(AgentContractError):
+        summarize_agent(SRC, 2, "m", llm=llm)
+
+
+def test_verify_agent_pass_checks_against_source():
+    llm = FakeLLM('{"passed": true, "issues": []}')
+    digest = Digest([DigestItem("Title A", "https://e/a", "sum a")])
+    c = verify_agent(digest, SRC, "m", llm=llm)
+    assert c == Critique(passed=True, issues=[])
+    assert llm.calls[0]["system_prompt"] == VERIFIER_SYSTEM_PROMPT
+    # both the SOURCE body and the candidate summary are in the review prompt.
+    assert "body a" in llm.calls[0]["prompt"]
+    assert "sum a" in llm.calls[0]["prompt"]
+
+
+def test_verify_agent_fail_returns_issues():
+    llm = FakeLLM(
+        json.dumps(
+            {
+                "passed": False,
+                "issues": [{"index": 1, "kind": "hallucination", "detail": "made up"}],
+            }
+        )
+    )
+    digest = Digest([DigestItem("Title A", "https://e/a", "sum a")])
+    c = verify_agent(digest, SRC, "m", llm=llm)
+    assert c.passed is False
+    assert c.issues[0].detail == "made up"
+
+
+def test_verify_agent_empty_digest_no_llm_call():
+    llm = FakeLLM()
+    c = verify_agent(Digest(items=[]), SRC, "m", llm=llm)
+    assert c == Critique(passed=True, issues=[])
+    assert llm.calls == []
+
+
+def test_verify_agent_malformed_raises():
+    llm = FakeLLM("not json at all")
+    digest = Digest([DigestItem("Title A", "https://e/a", "sum a")])
+    with pytest.raises(AgentContractError):
+        verify_agent(digest, SRC, "m", llm=llm)
