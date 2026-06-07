@@ -50,3 +50,31 @@ class OutputOut(BaseModel):
     content: str
     data: dict[str, Any] | None
     created_at: datetime
+
+
+# --- schedules (CRUD) ------------------------------------------------------
+
+class ScheduleOut(BaseModel):
+    model_config = _FROM_RECORD
+    id: str
+    workflow: str
+    cron: str
+    timezone: str
+    enabled: bool
+    last_run_at: datetime | None
+    next_run_at: datetime | None
+    created_at: datetime
+
+
+class ScheduleCreate(BaseModel):
+    cron: str
+    workflow: str = "news"
+    tz: str = "UTC"
+    enabled: bool = True
+
+
+class ScheduleUpdate(BaseModel):
+    # All optional — PATCH applies only the fields actually sent (exclude_unset).
+    cron: str | None = None
+    tz: str | None = None
+    enabled: bool | None = None

@@ -29,6 +29,8 @@ from .dao import (
     set_schedule_enabled,
     set_user_password,
     update_run_status,
+    update_schedule,
+    delete_schedule,
 )
 from .engine import configure, drop_db, get_engine, init_db
 from .models import RUN_STATUSES, RUN_TRIGGERS, metadata
@@ -58,6 +60,8 @@ __all__ = [
     "list_enabled_schedules",
     "list_due_schedules",
     "set_schedule_enabled",
+    "update_schedule",
+    "delete_schedule",
     "mark_schedule_ran",
     # users
     "create_user",

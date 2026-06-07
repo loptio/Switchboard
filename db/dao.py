@@ -291,6 +291,48 @@ def set_schedule_enabled(schedule_id: str, enabled: bool) -> Schedule:
     return _update_schedule(schedule_id, {"enabled": enabled})
 
 
+def update_schedule(
+    schedule_id: str,
+    *,
+    cron: str = _UNSET,  # type: ignore[assignment]
+    tz: str = _UNSET,  # type: ignore[assignment]
+    enabled: bool = _UNSET,  # type: ignore[assignment]
+    next_run_at: datetime | None = _UNSET,  # type: ignore[assignment]
+) -> Schedule:
+    """Update any subset of a schedule's fields; omitted fields are unchanged.
+
+    Raises LookupError if the schedule is missing. (cron validity is enforced in
+    the API layer via cronutil; the data layer just stores what it's given.)
+    """
+    values: dict = {}
+    if cron is not _UNSET:
+        values["cron"] = cron
+    if tz is not _UNSET:
+        values["timezone"] = tz
+    if enabled is not _UNSET:
+        values["enabled"] = enabled
+    if next_run_at is not _UNSET:
+        values["next_run_at"] = _to_utc(next_run_at)
+    if not values:  # nothing to change — return the current row (or 'missing')
+        sched = get_schedule(schedule_id)
+        if sched is None:
+            raise LookupError(f"No schedule with id {schedule_id!r}")
+        return sched
+    return _update_schedule(schedule_id, values)
+
+
+def delete_schedule(schedule_id: str) -> None:
+    """Delete a schedule. Raises LookupError if it does not exist."""
+    if not _is_uuid(schedule_id):
+        raise LookupError(f"No schedule with id {schedule_id!r}")
+    with get_engine().begin() as conn:
+        result = conn.execute(
+            schedules.delete().where(schedules.c.id == schedule_id)
+        )
+        if result.rowcount == 0:
+            raise LookupError(f"No schedule with id {schedule_id!r}")
+
+
 def mark_schedule_ran(
     schedule_id: str,
     *,
