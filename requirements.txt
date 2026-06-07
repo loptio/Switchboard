@@ -1,7 +1,12 @@
 # Runtime
 feedparser          # RSS fetching/parsing (deterministic, no agent)
-claude-agent-sdk    # Claude Agent SDK — summarization via subscription auth
+claude-agent-sdk==0.2.93  # Claude Agent SDK — pinned: an SDK upgrade once broke tools=[] (Phase 1 lesson)
 python-dotenv       # load configuration from .env
+
+# Phase 2 — database (Unit 1). Runtime uses PostgreSQL; offline tests use SQLite.
+SQLAlchemy>=2.0,<3       # Core query builder + portable schema
+alembic>=1.13,<2         # schema migrations (applied to PostgreSQL)
+psycopg[binary]>=3.1,<4  # PostgreSQL driver (runtime only)
 
 # Dev / test
 pytest              # fetch-module test
