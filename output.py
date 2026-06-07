@@ -13,6 +13,15 @@ from pathlib import Path
 from agent import Digest
 
 
+def _inline(text: str) -> str:
+    """Collapse internal whitespace/newlines so a value stays on one markdown line.
+
+    A newline inside a title or summary would otherwise break the list item or
+    its indentation.
+    """
+    return " ".join(text.split())
+
+
 def render_markdown(digest: Digest, feed_url: str, day: date) -> str:
     """Render a Digest into a markdown string."""
     lines = [
@@ -24,9 +33,10 @@ def render_markdown(digest: Digest, feed_url: str, day: date) -> str:
     if not digest.items:
         lines.append("_No items._")
     for i, item in enumerate(digest.items, start=1):
-        lines.append(f"{i}. **{item.title}**")
-        lines.append(f"   {item.one_line_summary}")
-        lines.append(f"   <{item.link}>")
+        lines.append(f"{i}. **{_inline(item.title)}**")
+        lines.append(f"   {_inline(item.one_line_summary)}")
+        link = _inline(item.link)
+        lines.append(f"   <{link}>" if link else "   (no link)")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
