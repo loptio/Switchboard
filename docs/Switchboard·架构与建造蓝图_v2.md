@@ -152,7 +152,7 @@
   - ✅ Unit 3 人在环 suspend/resume 原语(引擎 + CLI),计划已审、已完成
 - ✅ **Phase 6** — 真实复杂任务工作流(多源采集+过滤 / 解读+反向思考 / 组装+E2E,约 2–3 unit)。证明多代理价值;给出第二个真实工作流供 Phase 7 归纳。
 - ✅ **Phase 7** — 工作流与代理"数据化" + 通用编排器(代理即数据 / 工作流定义 schema + 读定义动态构图的通用编排器 / dogfood 重写两个工作流,约 3 unit)。兑现第 3 节。
-- ⬜ **Phase 8** — 网页合成器 + 监控 + 网页版人在环 + 工作区(监控+网页人在环 / 合成器 UI / 工作区选择+权限,约 2–3 unit)。
+- ✅ **Phase 8** — 网页合成器 + 监控 + 网页版人在环 + 工作区(监控+网页人在环 / 合成器 UI / 工作区选择+权限,约 2–3 unit)。
 - ⬜ **Phase 9** — Meta-agent(带护栏)—— 9/10 先后到时再定(约 1–2 unit)。依赖 Phase 7,受益于 Phase 8。
 - ⬜ **Phase 10** — Coding-agent seam(**系统终点**):换 `llm.py(tools=[])` 缝为 Agent SDK / Managed Agents worker + 会话管理 + 沙箱 + 多 agent 对话(Agent Teams / Managed Agents)。正交于 8/9;coding(10) 与 meta-agent(9) 先后到时再定。计量计费 + 沙箱/worktree 安全为已知代价。
 - ⬜ **(小项,非 phase)Mac-as-server**:常驻服务 + 防休眠 + 可选 Tailscale,让"踢一脚走人、从手机看"落地。上云推迟。
