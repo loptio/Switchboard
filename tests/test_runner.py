@@ -13,8 +13,10 @@ import pytest
 import db
 import runner
 from agent import Critique, Digest, DigestItem
+from brief_agent import Brief, BriefItem, Perspective
 from config import Config
 from fetch import FeedItem
+from sources import SourceItem
 
 T0 = datetime(2026, 6, 7, 6, 0, tzinfo=timezone.utc)
 
@@ -154,3 +156,77 @@ def test_resume_run_missing_raises(database, tmp_path):
             {"action": "approve"},
             config=_cfg(tmp_path),
         )
+
+
+# --- brief workflow dispatch (Phase 6) -------------------------------------
+
+FAKE_SOURCE_ITEMS = [SourceItem("A", "https://e/a", "Src", "科技", "pub", "text a")]
+FAKE_BRIEF = Brief(
+    date="2026-06-07",
+    items=[
+        BriefItem(
+            "A", "https://e/a", "Src", "科技", "sum A",
+            [Perspective("商业", "biz"), Perspective("政策", "pol"), Perspective("技术", "tech")],
+        )
+    ],
+)
+
+
+@pytest.fixture
+def fake_brief_pipeline(monkeypatch):
+    monkeypatch.setattr(runner, "gather_sources", lambda: FAKE_SOURCE_ITEMS)
+    monkeypatch.setattr(runner, "build_brief", lambda items, *, model, day: FAKE_BRIEF)
+
+
+def test_run_once_brief_success(database, fake_brief_pipeline, tmp_path, monkeypatch):
+    sent = []
+    monkeypatch.setattr(runner, "send_brief", lambda b: sent.append(b))
+
+    run = runner.run_once(trigger="manual", workflow="brief", config=_cfg(tmp_path), now=T0)
+
+    assert run.status == "success" and run.workflow == "brief"
+    outs = db.list_outputs(run.id)
+    assert len(outs) == 1 and outs[0].type == "brief"
+    assert "sum A" in outs[0].content and "商业" in outs[0].content and "biz" in outs[0].content
+    assert outs[0].data["items"][0]["summary"] == "sum A"
+    assert outs[0].data["items"][0]["perspectives"][0]["stance"] == "商业"
+    assert (tmp_path / "brief-2026-06-07.md").exists()
+    assert sent == [FAKE_BRIEF]
+
+
+def test_run_once_brief_email_failure_is_graceful(
+    database, fake_brief_pipeline, tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setattr(runner, "send_brief", _raise("smtp down"))
+    with caplog.at_level(logging.WARNING):
+        run = runner.run_once(workflow="brief", config=_cfg(tmp_path), now=T0)
+    assert run.status == "success"
+    assert len(db.list_outputs(run.id)) == 1
+    assert any("email delivery failed" in r.message for r in caplog.records)
+
+
+def test_run_once_brief_pipeline_failure_records_failed(database, tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "gather_sources", _raise("network down"))
+    run = runner.run_once(workflow="brief", config=_cfg(tmp_path), now=T0)
+    assert run.status == "failed" and "network down" in run.error
+    assert db.list_outputs(run.id) == []
+
+
+def test_workflow_dispatch_picks_the_right_pipeline(database, tmp_path, monkeypatch):
+    called = []
+    monkeypatch.setattr(runner, "fetch_feed", lambda url: FAKE_ITEMS)
+    monkeypatch.setattr(
+        runner, "build_digest", lambda items, n, model: called.append("digest") or FAKE_DIGEST
+    )
+    monkeypatch.setattr(runner, "gather_sources", lambda: FAKE_SOURCE_ITEMS)
+    monkeypatch.setattr(
+        runner, "build_brief", lambda items, *, model, day: called.append("brief") or FAKE_BRIEF
+    )
+    monkeypatch.setattr(runner, "send_digest", lambda d: None)
+    monkeypatch.setattr(runner, "send_brief", lambda b: None)
+
+    runner.run_once(workflow="news", config=_cfg(tmp_path), now=T0)
+    runner.run_once(workflow="brief", config=_cfg(tmp_path), now=T0)
+    runner.run_once(workflow="digest", config=_cfg(tmp_path), now=T0)  # legacy alias of digest
+
+    assert called == ["digest", "brief", "digest"]

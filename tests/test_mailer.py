@@ -7,6 +7,7 @@ import pytest
 
 import mailer
 from agent import Digest, DigestItem
+from brief_agent import Brief, BriefItem, Perspective
 
 DIGEST = Digest(
     [
@@ -14,6 +15,16 @@ DIGEST = Digest(
         # title/summary with HTML metacharacters, URL with an ampersand
         DigestItem("B & <C>", "https://e/b?q=1&x=2", "Sum <b>2</b>"),
     ]
+)
+
+BRIEF = Brief(
+    date="2026-06-08",
+    items=[
+        BriefItem(
+            "Title A", "https://e/a?q=1&x=2", "Src & Co", "科技", "Sum <b>1</b>",
+            [Perspective("商业", "biz take"), Perspective("技术", "tech take")],
+        )
+    ],
 )
 
 _ALL_KEYS = (
@@ -187,3 +198,29 @@ def test_send_failure_propagates(smtp_env, monkeypatch):
 
     with pytest.raises(smtplib.SMTPException):
         mailer.send_digest(DIGEST)
+
+
+# --- brief delivery (Phase 6) ----------------------------------------------
+
+def test_send_brief_multipart_with_perspectives(smtp_env, monkeypatch):
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+
+    mailer.send_brief(BRIEF)
+
+    msg = FakeSMTP.last.messages[0]
+    assert "Brief" in msg["Subject"]
+    assert msg.get_content_type() == "multipart/alternative"
+
+    text = msg.get_body(preferencelist=("plain",)).get_content()
+    assert "Title A" in text and "商业" in text and "biz take" in text
+
+    html_body = msg.get_body(preferencelist=("html",)).get_content()
+    assert "<a href=" in html_body and "技术" in html_body
+    # HTML metacharacters escaped (source "&", summary "<b>", href ampersand)
+    assert "&amp;" in html_body and "<b>" not in html_body
+
+
+def test_send_brief_skips_when_unconfigured(no_smtp_env, monkeypatch):
+    tried = _block_connect(monkeypatch)
+    mailer.send_brief(BRIEF)  # must neither raise nor connect
+    assert tried == []

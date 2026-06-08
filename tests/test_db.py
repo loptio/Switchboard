@@ -28,6 +28,14 @@ def test_create_run_defaults(database):
     assert db.get_run(run.id) == run
 
 
+def test_create_run_brief_workflow(database):
+    # the workflow selector (Phase 6) stores 'brief' alongside the default 'news'
+    run = db.create_run(workflow="brief", now=T0)
+    assert run.workflow == "brief"
+    assert db.get_run(run.id).workflow == "brief"
+    assert [r.id for r in db.list_runs(workflow="brief")] == [run.id]
+
+
 def test_create_run_rejects_bad_trigger(database):
     with pytest.raises(ValueError):
         db.create_run(trigger="cron")

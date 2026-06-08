@@ -34,11 +34,14 @@ from datetime import date, datetime
 import checkpoint
 import db
 from agent import Digest
+from brief_agent import Brief
+from brief_orchestrator import build_brief
 from config import Config, load_config
 from fetch import fetch_feed
-from mailer import send_digest
+from mailer import send_brief, send_digest
 from orchestrator import ReviewOutcome, build_digest, resume_review_run, start_review_run
-from output import render_markdown, write_digest
+from output import render_brief_markdown, render_markdown, write_brief, write_digest
+from sources import gather_sources
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +53,11 @@ def _digest_to_data(digest: Digest, feed_url: str, day: date) -> dict:
         "date": day.isoformat(),
         "items": [asdict(item) for item in digest.items],
     }
+
+
+def _brief_to_data(brief: Brief) -> dict:
+    """Structured form of the brief for the Output.data (JSONB) column."""
+    return {"date": brief.date, "items": [asdict(item) for item in brief.items]}
 
 
 def _finalize(run: db.Run, digest: Digest, cfg: Config, now: datetime | None) -> db.Run:
@@ -89,14 +97,31 @@ def _finalize(run: db.Run, digest: Digest, cfg: Config, now: datetime | None) ->
     return final
 
 
-def _run_pipeline(run: db.Run, cfg: Config, now: datetime | None) -> db.Run:
-    """Run the (non-interactive) pipeline for an already-running `run`.
+def _finalize_brief(run: db.Run, brief: Brief, cfg: Config, now: datetime | None) -> db.Run:
+    """Finish a brief run: render → write local file → save Output → mark success →
+    email (graceful). The brief counterpart of `_finalize`, reusing the same
+    render/store/email pipeline (different renderer + Output type). Never raises."""
+    try:
+        day = now.date() if now is not None else date.today()
+        markdown = render_brief_markdown(brief)
+        write_brief(markdown, cfg.output_dir, day)
+        db.save_output(run.id, markdown, type="brief", data=_brief_to_data(brief), now=now)
+    except Exception as exc:
+        log.exception("run %s failed during finalize", run.id)
+        return db.mark_failed(run.id, str(exc), now=now)
 
-    Never raises: a failure is caught, recorded (status=failed) and the failed Run
-    returned, so one bad run never crashes the caller (scheduler tick). The run
-    must already be in the `running` state (run_once marks it; the worker drain
-    claims it). Shared by run_once and execute_claimed_run.
-    """
+    final = db.mark_success(run.id, now=now)
+    log.info("run %s succeeded (%d items)", run.id, len(brief.items))
+    try:
+        send_brief(brief)
+    except Exception as exc:
+        log.warning(
+            "run %s: email delivery failed (brief still saved): %s", run.id, exc
+        )
+    return final
+
+
+def _run_digest_pipeline(run: db.Run, cfg: Config, now: datetime | None) -> db.Run:
     try:
         items = fetch_feed(cfg.feed_url)
         digest = build_digest(items, cfg.count, cfg.model)
@@ -104,6 +129,33 @@ def _run_pipeline(run: db.Run, cfg: Config, now: datetime | None) -> db.Run:
         log.exception("run %s failed", run.id)
         return db.mark_failed(run.id, str(exc), now=now)
     return _finalize(run, digest, cfg, now)
+
+
+def _run_brief_pipeline(run: db.Run, cfg: Config, now: datetime | None) -> db.Run:
+    try:
+        day = now.date() if now is not None else date.today()
+        items = gather_sources()
+        brief = build_brief(items, model=cfg.model, day=day)
+    except Exception as exc:
+        log.exception("run %s failed", run.id)
+        return db.mark_failed(run.id, str(exc), now=now)
+    return _finalize_brief(run, brief, cfg, now)
+
+
+def _run_pipeline(run: db.Run, cfg: Config, now: datetime | None) -> db.Run:
+    """Run the (non-interactive) pipeline for an already-running `run`, DISPATCHING
+    on the run's workflow: 'brief' → the brief workflow, anything else (incl. the
+    legacy 'news'/'digest' label) → the digest workflow.
+
+    This is the workflow selector (brief §8): a simple dispatch, not the data-driven
+    orchestrator (that is Phase 7). Never raises: a failure is caught, recorded
+    (status=failed) and the failed Run returned, so one bad run never crashes the
+    caller (scheduler tick). The run must already be in the `running` state.
+    Shared by run_once and execute_claimed_run.
+    """
+    if run.workflow == "brief":
+        return _run_brief_pipeline(run, cfg, now)
+    return _run_digest_pipeline(run, cfg, now)
 
 
 def run_once(

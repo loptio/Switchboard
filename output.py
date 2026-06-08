@@ -1,8 +1,12 @@
-"""Output module — render the digest to markdown, write a file, print to console.
+"""Output module — render a digest/brief to markdown and write a file.
 
-Contract (Phase 1 brief §4):
-    input  = a Digest
-    output = a markdown file output/digest-YYYY-MM-DD.md (+ console print)
+Contracts:
+    Phase 1 (digest): a Digest -> output/digest-YYYY-MM-DD.md
+    Phase 6 (brief) : a Brief  -> output/brief-YYYY-MM-DD.md
+
+The renderers differ (a brief carries per-item perspectives a digest has not), but
+both share one file-writing helper so the brief reuses the existing output pipeline
+rather than rebuilding it.
 """
 
 from __future__ import annotations
@@ -11,6 +15,7 @@ from datetime import date
 from pathlib import Path
 
 from agent import Digest
+from brief_agent import Brief
 
 
 def _inline(text: str) -> str:
@@ -41,9 +46,34 @@ def render_markdown(digest: Digest, feed_url: str, day: date) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def write_digest(markdown: str, output_dir: Path, day: date) -> Path:
-    """Write the markdown to output_dir/digest-YYYY-MM-DD.md and return the path."""
+def render_brief_markdown(brief: Brief) -> str:
+    """Render a Brief into a markdown string (per item: summary + perspectives)."""
+    lines = [f"# Brief — {brief.date}", ""]
+    if not brief.items:
+        lines.append("_No items._")
+    for i, item in enumerate(brief.items, start=1):
+        lines.append(f"{i}. **{_inline(item.title)}** — _{_inline(item.source)} · {_inline(item.domain)}_")
+        link = _inline(item.link)
+        lines.append(f"   <{link}>" if link else "   (no link)")
+        lines.append(f"   {_inline(item.summary)}")
+        for p in item.perspectives:
+            lines.append(f"   - **{_inline(p.stance)}**: {_inline(p.take)}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _write(markdown: str, output_dir: Path, name: str) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / f"digest-{day.isoformat()}.md"
+    path = output_dir / name
     path.write_text(markdown, encoding="utf-8")
     return path
+
+
+def write_digest(markdown: str, output_dir: Path, day: date) -> Path:
+    """Write the markdown to output_dir/digest-YYYY-MM-DD.md and return the path."""
+    return _write(markdown, output_dir, f"digest-{day.isoformat()}.md")
+
+
+def write_brief(markdown: str, output_dir: Path, day: date) -> Path:
+    """Write the markdown to output_dir/brief-YYYY-MM-DD.md and return the path."""
+    return _write(markdown, output_dir, f"brief-{day.isoformat()}.md")

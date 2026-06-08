@@ -35,6 +35,33 @@ def test_run_once_returns_nonzero_on_failure(monkeypatch):
     assert cli.main(["run-once"]) == 1
 
 
+def test_run_once_default_workflow_is_digest(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(runner, "run_once", lambda **kw: seen.update(kw) or _run())
+    monkeypatch.setattr(db, "list_outputs", lambda run_id: [])
+
+    assert cli.main(["run-once"]) == 0
+    assert seen["workflow"] == "digest"
+
+
+def test_run_once_workflow_brief_dispatches(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(runner, "run_once", lambda **kw: seen.update(kw) or _run(workflow="brief"))
+    monkeypatch.setattr(db, "list_outputs", lambda run_id: [])
+
+    assert cli.main(["run-once", "--workflow", "brief"]) == 0
+    assert seen["workflow"] == "brief"
+
+
+def test_run_once_brief_with_review_is_rejected(monkeypatch, capsys):
+    called = []
+    monkeypatch.setattr(runner, "run_review_once", lambda **kw: called.append(True) or (_run(), None))
+
+    assert cli.main(["run-once", "--workflow", "brief", "--review"]) == 1
+    assert called == []  # the digest-only review path is never invoked for brief
+    assert "digest only" in capsys.readouterr().err
+
+
 def test_add_schedule_dispatches(monkeypatch, capsys):
     seen = {}
 

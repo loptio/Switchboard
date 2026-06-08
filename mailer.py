@@ -29,6 +29,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from agent import Digest
+from brief_agent import Brief
 
 # Load ONLY this project's .env (same rule as config.py / db.settings).
 load_dotenv(Path(__file__).parent / ".env")
@@ -122,14 +123,48 @@ def _render_html(digest: Digest, day: date) -> str:
     return f"<h2>{heading}</h2>\n<ol>\n" + "\n".join(rows) + "\n</ol>\n"
 
 
-def _build_message(digest: Digest, cfg: _SmtpConfig, day: date) -> EmailMessage:
-    msg = EmailMessage()
-    msg["Subject"] = cfg.subject or f"News Digest — {day.isoformat()}"
-    msg["From"] = cfg.sender
-    msg["To"] = ", ".join(cfg.recipients)
-    msg.set_content(_render_text(digest, day))
-    msg.add_alternative(_render_html(digest, day), subtype="html")
-    return msg
+def _render_brief_text(brief: Brief) -> str:
+    lines = [f"Brief — {brief.date}", ""]
+    if not brief.items:
+        lines.append("(no items)")
+    for i, item in enumerate(brief.items, start=1):
+        lines.append(
+            f"{i}. {_collapse(item.title)} [{_collapse(item.source)} · {_collapse(item.domain)}]"
+        )
+        link = _collapse(item.link)
+        lines.append(f"   {link}" if link else "   (no link)")
+        lines.append(f"   {_collapse(item.summary)}")
+        for p in item.perspectives:
+            lines.append(f"   - {_collapse(p.stance)}: {_collapse(p.take)}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_brief_html(brief: Brief) -> str:
+    heading = html.escape(f"Brief — {brief.date}")
+    if not brief.items:
+        return f"<h2>{heading}</h2>\n<p>(no items)</p>\n"
+    blocks = []
+    for item in brief.items:
+        title = html.escape(_collapse(item.title))
+        meta = html.escape(_collapse(f"{item.source} · {item.domain}"))
+        summary = html.escape(_collapse(item.summary))
+        link = _collapse(item.link)
+        if link:
+            href = html.escape(link, quote=True)  # escape URL too (dirty feeds)
+            title_html = f'<a href="{href}">{title}</a>'
+        else:
+            title_html = title
+        persp = "\n".join(
+            f"    <li><em>{html.escape(_collapse(p.stance))}</em>: "
+            f"{html.escape(_collapse(p.take))}</li>"
+            for p in item.perspectives
+        )
+        blocks.append(
+            f"  <li><strong>{title_html}</strong> <small>{meta}</small><br>{summary}\n"
+            f"    <ul>\n{persp}\n    </ul>\n  </li>"
+        )
+    return f"<h2>{heading}</h2>\n<ol>\n" + "\n".join(blocks) + "\n</ol>\n"
 
 
 def _send(msg: EmailMessage, cfg: _SmtpConfig) -> None:
@@ -144,8 +179,9 @@ def _send(msg: EmailMessage, cfg: _SmtpConfig) -> None:
         server.send_message(msg)
 
 
-def send_digest(digest: Digest) -> None:
-    """Deliver a digest by email. See module docstring for the config contract."""
+def _deliver(*, subject_default: str, text_body: str, html_body: str, kind: str) -> None:
+    """Shared SMTP envelope: check config (skip/warn), build the multipart message,
+    send. The per-workflow renderers supply the subject and the text/html bodies."""
     missing = [k for k in _REQUIRED_KEYS if not _present(k)]
     if missing:
         if any(_present(k) for k in _ALL_KEYS):
@@ -161,6 +197,32 @@ def send_digest(digest: Digest) -> None:
         return
 
     cfg = _config_from_env()
-    msg = _build_message(digest, cfg, date.today())
+    msg = EmailMessage()
+    msg["Subject"] = cfg.subject or subject_default
+    msg["From"] = cfg.sender
+    msg["To"] = ", ".join(cfg.recipients)
+    msg.set_content(text_body)
+    msg.add_alternative(html_body, subtype="html")
     _send(msg, cfg)
-    log.info("sent digest email to %s", ", ".join(cfg.recipients))
+    log.info("sent %s email to %s", kind, ", ".join(cfg.recipients))
+
+
+def send_digest(digest: Digest) -> None:
+    """Deliver a digest by email. See module docstring for the config contract."""
+    day = date.today()
+    _deliver(
+        subject_default=f"News Digest — {day.isoformat()}",
+        text_body=_render_text(digest, day),
+        html_body=_render_html(digest, day),
+        kind="digest",
+    )
+
+
+def send_brief(brief: Brief) -> None:
+    """Deliver a brief by email (same config contract as send_digest)."""
+    _deliver(
+        subject_default=f"Brief — {brief.date}",
+        text_body=_render_brief_text(brief),
+        html_body=_render_brief_html(brief),
+        kind="brief",
+    )

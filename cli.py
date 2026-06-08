@@ -2,7 +2,7 @@
 
 Each subcommand delegates straight to the data layer / runner / scheduler:
 
-    python cli.py run-once [--review]                # --review pauses for human approval
+    python cli.py run-once [--workflow digest|brief] [--review]  # --review: digest only
     python cli.py resume-run <run_id> --decision approve|redo [--feedback "..."]
     python cli.py checkpointer-setup                 # create checkpoint tables (run once)
     python cli.py add-schedule --cron "0 6 * * *" [--tz UTC] [--workflow news]
@@ -65,9 +65,15 @@ def _report_review(run, outcome) -> int:
 
 def _run_once(args: argparse.Namespace) -> int:
     if getattr(args, "review", False):
+        if args.workflow == "brief":
+            print(
+                "error: the brief workflow has no --review gate (digest only)",
+                file=sys.stderr,
+            )
+            return 1
         run, outcome = runner.run_review_once()
         return _report_review(run, outcome)
-    run = runner.run_once(trigger="manual")
+    run = runner.run_once(trigger="manual", workflow=args.workflow)
     print(f"run {run.id}: {run.status}")
     if run.status == "failed":
         print(f"error: {run.error}", file=sys.stderr)
@@ -168,9 +174,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     ro = sub.add_parser("run-once", help="run the workflow once now (manual trigger)")
     ro.add_argument(
+        "--workflow",
+        choices=["digest", "brief", "news"],
+        default="digest",
+        help="which workflow to run (default digest; 'news' is the legacy digest alias)",
+    )
+    ro.add_argument(
         "--review",
         action="store_true",
-        help="human-in-the-loop: pause for approval before finishing",
+        help="human-in-the-loop: pause for approval before finishing (digest only)",
     )
     ro.set_defaults(func=_run_once)
 
