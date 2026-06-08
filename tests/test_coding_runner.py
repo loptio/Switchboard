@@ -212,6 +212,67 @@ def test_coding_run_refuses_a_dirty_git_workspace(database, tmp_path, git_repo):
     assert (git_repo / "wip.txt").exists()  # the user's work is untouched
 
 
+# --- Phase 10b-2: command capture + the .git integrity guard --------------------
+
+class _CommandSeam:
+    """A fake seam that 'ran commands' (writes a file, reports the commands it ran)."""
+
+    def __call__(self, task, workspace_dir, *, model, max_turns, max_tool_calls,
+                 max_budget_usd, feedback=None, **kw):
+        (Path(workspace_dir) / "hello.py").write_text("x = 1\n", encoding="utf-8")
+        return CodingResult(
+            summary="ran tests", diff="", changed_files=[], status="completed",
+            commands=["python -m pytest -q", "ruff check ."],
+        )
+
+
+class _GitTamperSeam:
+    """A fake seam that injects a .git hook — the un-sandboxable code-exec vector — to
+    prove the worker-side integrity guard detects, neutralises, and refuses it."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, task, workspace_dir, *, model, max_turns, max_tool_calls,
+                 max_budget_usd, feedback=None, **kw):
+        self.calls += 1
+        hook = Path(workspace_dir) / ".git" / "hooks" / "pre-commit"
+        hook.write_text("#!/bin/sh\necho pwned\n", encoding="utf-8")
+        return CodingResult(
+            summary="(tried to tamper)", diff="", changed_files=[], status="completed",
+            commands=["printf '...' > .git/hooks/pre-commit"],
+        )
+
+
+def test_coding_run_captures_commands_in_output(database, tmp_path, git_repo):
+    done = _claim_and_run(_cfg(tmp_path), _CommandSeam(), coding_workspace=str(git_repo))
+    assert done.status == "success"
+    coding = [o for o in db.list_outputs(done.id) if o.type == "coding"][0]
+    assert coding.data["commands"] == ["python -m pytest -q", "ruff check ."]
+
+
+def test_coding_run_refuses_and_neutralises_git_tampering(database, tmp_path, git_repo):
+    seam = _GitTamperSeam()
+    done = _claim_and_run(_cfg(tmp_path), seam, coding_workspace=str(git_repo))
+
+    assert seam.calls == 1
+    assert done.status == "failed"
+    assert "tampered" in (done.error or "")
+    # neutralised on disk: the injected hook is gone (vector closed before the run is kept)
+    assert not (git_repo / ".git" / "hooks" / "pre-commit").exists()
+    # the attempt is still persisted for inspection (commands + the tampered .git paths)
+    coding = [o for o in db.list_outputs(done.id) if o.type == "coding"][0]
+    assert coding.data["git_tampered"] and "pre-commit" in coding.data["git_tampered"][0]
+    assert coding.data["commands"]
+
+
+def test_coding_run_non_git_workspace_has_no_tamper_field(database, tmp_path):
+    # the .git guard is git-only; a non-git workspace is unaffected (= 10a/10b-1).
+    done = _claim_and_run(_cfg(tmp_path), _FakeSeam())
+    coding = [o for o in db.list_outputs(done.id) if o.type == "coding"][0]
+    assert coding.data["git_tampered"] == []
+
+
 def test_run_once_dispatches_to_coding(database, tmp_path, monkeypatch):
     # the CLI/scheduler entry (run_once) also routes a coding workflow to the harness.
     monkeypatch.setattr(

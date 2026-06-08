@@ -13,8 +13,17 @@ import styles from "./RunDetail.module.css";
  *  the unified diff. The human approves the diff or sends it back with feedback. */
 function CodingDiff({ coding }: { coding: CodingReviewPayload }) {
   const stopped = coding.status !== "completed";
+  const tampered = coding.git_tampered ?? [];
+  const commands = coding.commands ?? [];
   return (
     <div>
+      {tampered.length > 0 && (
+        <p role="alert" className={styles.limitBanner}>
+          ⛔ The agent modified git internals (<code>{tampered.join(", ")}</code>) — a
+          hook/config code-execution vector. It was reverted and this run will NOT be
+          finalized. Reject and re-run.
+        </p>
+      )}
       {stopped && (
         <p role="alert" className={styles.limitBanner}>
           ⚠ The agent stopped at a limit/budget (<code>{coding.status}</code>) — this is
@@ -39,6 +48,22 @@ function CodingDiff({ coding }: { coding: CodingReviewPayload }) {
       ) : (
         <p>
           <em>No files changed.</em>
+        </p>
+      )}
+      {/* Phase 10b-2: the commands the agent ran — their side effects need not appear
+          in the diff, so the reviewer sees them explicitly alongside it. */}
+      <strong>Commands run</strong>
+      {commands.length > 0 ? (
+        <ul aria-label="commands">
+          {commands.map((c, i) => (
+            <li key={i}>
+              <code>{c}</code>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p>
+          <em>No commands run.</em>
         </p>
       )}
       <strong>Diff</strong>

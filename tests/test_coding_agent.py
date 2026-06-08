@@ -152,3 +152,58 @@ def test_tally_counts_turns_tools_cost_and_summary():
 def test_tally_falls_back_to_text_when_no_result():
     messages = [AssistantMessage(content=[TextBlock(text="just text")], model="m")]
     assert C._tally(messages).summary == "just text"
+
+
+def test_tally_captures_bash_commands_in_order(tmp_path):
+    # Phase 10b-2: the shell commands the agent ran are folded out for review.
+    messages = [
+        AssistantMessage(
+            content=[
+                ToolUseBlock(id="1", name="Bash", input={"command": "pytest -q"}),
+                ToolUseBlock(id="2", name="Write", input={"file_path": "a.py"}),
+                ToolUseBlock(id="3", name="Bash", input={"command": "ls -la"}),
+            ],
+            model="m",
+        ),
+        ResultMessage(
+            subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
+            num_turns=1, session_id="s", total_cost_usd=0.1, result="done",
+        ),
+    ]
+    t = C._tally(messages)
+    assert t.commands == ["pytest -q", "ls -la"]  # only Bash, in order
+    assert t.tool_calls == 3  # every tool use still counted toward the bound
+
+
+# --- Phase 10b-2: the sandbox / Bash / timeout WIRING (offline; no SDK call) ----
+
+def test_default_toolset_adds_bash_and_forbids_only_background_shells():
+    assert "Bash" in C.DEFAULT_CODING_TOOLS  # the agent can run commands now
+    assert "Bash" not in C._FORBIDDEN_TOOLS
+    assert set(C._FORBIDDEN_TOOLS) == {"BashOutput", "KillShell"}  # background shells off
+
+
+def _opts(tmp_path):
+    return C._build_options(
+        "sys", tmp_path, model="m", tools=C.DEFAULT_CODING_TOOLS,
+        max_turns=12, max_tool_calls=40, max_budget_usd=1.0, counter={"n": 0},
+    )
+
+
+def test_build_options_enables_sandbox_and_denies_network(tmp_path):
+    opts = _opts(tmp_path)
+    assert opts.sandbox["enabled"] is True
+    assert opts.sandbox["allowUnsandboxedCommands"] is False  # no command may bypass it
+    assert opts.sandbox["excludedCommands"] == []  # nothing runs outside the sandbox
+    assert "network" not in opts.sandbox  # no allowlist -> network denied by default
+    # workspace is the writable root; nothing outside it is reachable
+    assert opts.cwd == str(tmp_path) and opts.add_dirs == []
+
+
+def test_build_options_makes_bash_available_and_bounds_command_timeout(tmp_path):
+    opts = _opts(tmp_path)
+    assert "Bash" in opts.tools  # available to the model
+    assert "Bash" not in opts.disallowed_tools
+    assert opts.disallowed_tools == ["BashOutput", "KillShell"]
+    assert opts.env["BASH_DEFAULT_TIMEOUT_MS"] == str(C.DEFAULT_BASH_TIMEOUT_MS)
+    assert opts.env["BASH_MAX_TIMEOUT_MS"] == str(C.MAX_BASH_TIMEOUT_MS)

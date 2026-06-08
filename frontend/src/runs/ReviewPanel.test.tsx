@@ -75,4 +75,23 @@ describe("ReviewPanel (coding diff)", () => {
     await user.click(screen.getByRole("button", { name: /approve/i }));
     await waitFor(() => expect(resumeRun).toHaveBeenCalledWith("r1", "approve", undefined));
   });
+
+  it("shows the shell commands the agent ran (Phase 10b-2)", () => {
+    const withCmds: ReviewPayload = {
+      coding: { ...CODING_REVIEW.coding!, commands: ["python -m pytest -q", "ruff check ."] },
+    };
+    render(<ReviewPanel runId="r1" review={withCmds} onResolved={() => {}} />);
+    const list = screen.getByLabelText("commands");
+    expect(list).toHaveTextContent("python -m pytest -q");
+    expect(list).toHaveTextContent("ruff check .");
+  });
+
+  it("prominently flags a .git tampering attempt (Phase 10b-2)", () => {
+    const tampered: ReviewPayload = {
+      coding: { ...CODING_REVIEW.coding!, git_tampered: ["hooks/pre-commit"] },
+    };
+    render(<ReviewPanel runId="r1" review={tampered} onResolved={() => {}} />);
+    expect(screen.getByRole("alert")).toHaveTextContent(/git internals/i);
+    expect(screen.getByRole("alert")).toHaveTextContent(/hooks\/pre-commit/);
+  });
 });

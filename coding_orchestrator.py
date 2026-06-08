@@ -58,6 +58,8 @@ def _result_from_dict(d: dict) -> CodingResult:
         turns=d.get("turns", 0),
         tool_calls=d.get("tool_calls", 0),
         cost_usd=d.get("cost_usd"),
+        commands=list(d.get("commands") or []),
+        git_tampered=list(d.get("git_tampered") or []),
     )
 
 
@@ -82,9 +84,15 @@ class _State(TypedDict):
 def _coding_node(state: _State, config) -> dict:
     """Run one bounded coding-agent loop via the injected seam, store the result."""
     coding_fn = config["configurable"]["coding_fn"]
+    ws = state["workspace"]
+    is_git = workspace.is_git_repo(ws)
+    # Phase 10b-2: snapshot the security-relevant `.git` BEFORE the run, so a command
+    # that injects a hook / poisons config is caught (the un-sandboxable code-exec vector
+    # git diff & git restore can't see). Taken before the seam runs.
+    git_before = workspace.git_security_snapshot(ws) if is_git else None
     result = coding_fn(
         state["task"],
-        state["workspace"],
+        ws,
         model=state["model"],
         max_turns=state["max_turns"],
         max_tool_calls=state["max_tool_calls"],
@@ -93,13 +101,23 @@ def _coding_node(state: _State, config) -> dict:
     )
     log.info("coding node produced status=%s", getattr(result, "status", "?"))
     rd = _result_to_dict(result)
-    # git-aware diff (Phase 10b-1): when the workspace IS a git repo, the authoritative
-    # diff + changed files come from git (real, .gitignore-aware); a non-git workspace
-    # keeps the seam's snapshot diff (10a). Computed HERE (not in the faked seam) so it
-    # rides every path — incl. the offline fake — and is in the review payload below.
-    if rd.get("status") in ("completed", "stopped_limit") and workspace.is_git_repo(state["workspace"]):
-        diff, changed = workspace.git_diff(state["workspace"])
-        rd = {**rd, "diff": diff, "changed_files": changed}
+    if is_git:
+        # .git integrity guard FIRST — BEFORE any further git invocation: if a command
+        # tampered with `.git`, neutralise it (restore prior bytes / remove the injected
+        # file) and flag it, so our own `git diff` below runs against a clean, un-poisoned
+        # config and the family refuses to finalize a tampering run.
+        tampered = workspace.git_security_diff(git_before, workspace.git_security_snapshot(ws))
+        if tampered:
+            workspace.git_security_restore(ws, git_before)
+            rd = {**rd, "git_tampered": tampered}
+            log.warning("coding node: .git tampering neutralised: %s", tampered)
+        # git-aware diff (Phase 10b-1): when the workspace IS a git repo, the authoritative
+        # diff + changed files come from git (real, .gitignore-aware); a non-git workspace
+        # keeps the seam's snapshot diff (10a). Computed HERE (not in the faked seam) so it
+        # rides every path — incl. the offline fake — and is in the review payload below.
+        if rd.get("status") in ("completed", "stopped_limit"):
+            diff, changed = workspace.git_diff(ws)
+            rd = {**rd, "diff": diff, "changed_files": changed}
     # Clear feedback once consumed so a later auto-step doesn't re-apply it.
     return {"result": rd, "feedback": None}
 

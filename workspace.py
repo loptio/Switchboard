@@ -232,3 +232,94 @@ def git_restore(root: str | os.PathLike) -> None:
     if co.returncode != 0:
         log.info("git_restore: checkout skipped (%s)", (co.stderr or "").strip())
     _git(root, "clean", "-fd")
+
+
+# --- .git integrity guard (Phase 10b-2) -------------------------------------
+# A coding agent with a real shell can write into the repo's `.git` — and `.git/hooks`
+# scripts (or `.git/config` core.hooksPath / aliases / fsmonitor / sshCommand) run code
+# OUTSIDE the sandbox on the user's next git operation. `git diff` never shows `.git/`,
+# and `git_restore` (checkout + clean) never touches it — so审 diff / git 还原 cannot
+# catch this. The sandbox locks commands to the workspace, but `.git` is INSIDE the
+# workspace, so the OS sandbox does not block it either. The family therefore snapshots
+# the security-relevant `.git` contents around a run, and on any change NEUTRALISES it
+# (restores the prior bytes / removes the injected file) and REFUSES to finalize.
+#
+# Security-relevant = the code-execution + ref-integrity surface: hooks/ and refs/
+# (recursively) + config, HEAD, packed-refs. (objects/, index, logs/ are not a
+# code-exec vector and change on benign reads, so they are out of scope.)
+_GIT_SECURITY_DIRS = ("hooks", "refs")
+_GIT_SECURITY_FILES = ("config", "HEAD", "packed-refs")
+
+
+def _git_dir(root: str | os.PathLike) -> Path:
+    return Path(root).resolve() / ".git"
+
+
+def _iter_git_security_paths(git_dir: Path):
+    """Yield (relpath-under-.git, Path) for every security-relevant entry."""
+    for d in _GIT_SECURITY_DIRS:
+        base = git_dir / d
+        if base.is_dir():
+            for p in sorted(base.rglob("*")):
+                if p.is_symlink() or p.is_file():
+                    yield str(p.relative_to(git_dir)), p
+    for name in _GIT_SECURITY_FILES:
+        p = git_dir / name
+        if p.is_symlink() or p.is_file():
+            yield name, p
+
+
+def git_security_snapshot(root: str | os.PathLike) -> dict[str, tuple[str, bytes | str]]:
+    """Map each security-relevant `.git` path -> ("file", bytes) or ("link", target), for
+    a before/after integrity comparison. Distinguishes a symlink from a regular file so a
+    swapped/injected link is caught. Returns {} when there is no `.git` directory."""
+    git_dir = _git_dir(root)
+    out: dict[str, tuple[str, bytes | str]] = {}
+    if not git_dir.is_dir():
+        return out
+    for rel, p in _iter_git_security_paths(git_dir):
+        try:
+            if p.is_symlink():
+                out[rel] = ("link", os.readlink(p))
+            else:
+                out[rel] = ("file", p.read_bytes())
+        except OSError:
+            out[rel] = ("file", b"")
+    return out
+
+
+def git_security_diff(
+    before: dict[str, tuple[str, bytes | str]], after: dict[str, tuple[str, bytes | str]]
+) -> list[str]:
+    """Sorted `.git`-relative paths whose security-relevant content changed (added,
+    removed, or modified) between two snapshots — the agent's `.git` tampering, if any."""
+    return sorted(p for p in set(before) | set(after) if before.get(p) != after.get(p))
+
+
+def git_security_restore(root: str | os.PathLike, before: dict[str, tuple[str, bytes | str]]) -> None:
+    """Neutralise `.git` tampering: for every changed security-relevant path, remove what
+    is there now and restore the prior content (or leave it removed if the agent added
+    it). Closes the hook/config code-execution vector before the workspace is kept."""
+    git_dir = _git_dir(root)
+    if not git_dir.is_dir():
+        return
+    after = git_security_snapshot(root)
+    for rel in git_security_diff(before, after):
+        target = git_dir / rel
+        try:
+            if target.is_symlink() or target.is_file():
+                target.unlink()
+        except OSError:
+            pass
+        prior = before.get(rel)
+        if prior is None:
+            continue  # the agent ADDED this path -> it stays removed
+        kind, payload = prior
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if kind == "link" and isinstance(payload, str):
+                target.symlink_to(payload)
+            elif isinstance(payload, bytes):
+                target.write_bytes(payload)
+        except OSError:
+            pass

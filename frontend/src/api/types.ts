@@ -132,6 +132,8 @@ export interface CodingReviewPayload {
   changed_files: string[];
   status: string; // "completed" | "stopped_limit" | "failed"
   task?: string; // Phase 10b-1: the per-run task this coding run was given
+  commands?: string[]; // Phase 10b-2: shell commands the agent ran (side effects not in the diff)
+  git_tampered?: string[]; // Phase 10b-2: .git paths a command touched (reverted; run refused)
 }
 export interface ReviewPayload {
   digest?: { items: { title: string; link: string; one_line_summary: string }[] };

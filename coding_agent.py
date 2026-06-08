@@ -8,22 +8,31 @@ BOUNDED). Both import the Agent SDK and are worker-side; the web tier imports ne
 ONLY this module — the coding family and the runner stay untouched.
 
 This is the system's first crossing of the `tools=[]` boundary it deliberately built
-around: from a text-in/text-out reasoning pipeline to an agent that acts. Three nets
-make an unattended file-editing agent safe enough to run:
+around: from a text-in/text-out reasoning pipeline to an agent that acts. As of Phase
+10b-2 it can also run SHELL commands (Bash) — the real capability jump, and the most
+dangerous step. Several nets make an unattended, command-running agent safe enough:
 
-  1. CONFINEMENT — cwd=workspace, file tools only (NO Bash), and a `can_use_tool`
-     permission callback that DENIES any path resolving outside the workspace
-     (`workspace.confine`, realpath-based: rejects ``..`` / absolute / symlink escapes).
-  2. BOUNDED LOOP — hard caps on turns / tool-calls / budget; over any cap → stop and
-     mark `stopped_limit` (cost + safety; an unbounded agent loop can burn money fast).
-  3. DIFF REVIEW — the family routes the diff to a human gate (U2); this module just
-     PRODUCES the diff, from a git-free before/after snapshot (`workspace`).
+  1. CONFINEMENT — cwd=workspace; a `can_use_tool` callback DENIES any FILE-tool path
+     resolving outside the workspace or into `.git` (`workspace.confine` + `in_git_dir`,
+     realpath-based: rejects ``..`` / absolute / symlink escapes).
+  2. SANDBOX (Phase 10b-2, BORROWED not built — blueprint decision 12): the SDK/CLI's
+     native bash sandbox (Seatbelt on macOS, bubblewrap on Linux) confines every COMMAND's
+     filesystem to the workspace and DENIES network. We only wire it on (`_build_options`);
+     the containment is a real OS mechanism, verified hands-on, not in offline tests.
+  3. BOUNDED LOOP — hard caps on turns / tool-calls / budget + a per-command timeout
+     (`BASH_*_TIMEOUT_MS`); over any cap → `stopped_limit` (cost + anti-hang).
+  4. DIFF + COMMAND REVIEW — the family routes the diff AND the captured commands to a
+     human gate; commands' side effects are not in the diff, so they are shown alongside.
+     A worker-side `.git` integrity check (the family) refuses a run that touched git
+     internals via a command (the un-sandboxable hook code-execution vector).
 
 OFFLINE DISCIPLINE (non-negotiable): callers inject a fake with this module's
 signature, so the whole coding family runs in tests with NO SDK, NO key, NO spend.
-The real Agent SDK runs only in a metered E2E. The bound DECISION (`_classify`) and
-the permission callback (`_make_permission_cb`) are pure enough to unit-test offline
-without the SDK; the SDK wiring itself (`_arun`) is exercised only in the real E2E.
+The real Agent SDK runs only in a metered E2E. The bound DECISION (`_classify`), the
+permission callback (`_make_permission_cb`), the command fold (`_tally`) and the option
+wiring (`_build_options`) are pure enough to unit-test offline without the SDK; the SDK
+wiring itself (`_arun`) is exercised only in the real E2E. Offline tests verify the
+WIRING (sandbox set, Bash available, commands captured); they cannot verify CONTAINMENT.
 
 Auth: the SDK delegates to the Claude Code CLI subscription; do NOT set
 ANTHROPIC_API_KEY (that bills the paid API) — same rule as llm.py.
@@ -51,25 +60,35 @@ import workspace
 
 log = logging.getLogger(__name__)
 
-# Deliberately minimal toolset (blueprint decision B: "only read/write/edit files in
-# the workspace, no shell"). It is a PARAMETER so a real E2E can widen it (e.g. add
-# read-only Glob/Grep) — real command execution (Bash) is 10b, not here.
-DEFAULT_CODING_TOOLS: tuple[str, ...] = ("Read", "Write", "Edit")
+# Toolset (Phase 10b-2: Bash added — the agent can run commands, contained by the
+# sandbox). A PARAMETER so a real E2E can widen it. `Bash` is synchronous-only here
+# (background-shell tools stay forbidden, below).
+DEFAULT_CODING_TOOLS: tuple[str, ...] = ("Read", "Write", "Edit", "Bash")
 
 # tool_input keys that carry a filesystem path — every one is confined to the
 # workspace by the permission callback.
 _FILE_PATH_KEYS = ("file_path", "path", "notebook_path")
 
-# Tools that must never be available in 10a even if a caller widens `tools` (belt to
-# the `tools` available-set suspenders): no shell / command execution.
-_FORBIDDEN_TOOLS = ["Bash", "BashOutput", "KillShell"]
+# Tools that must never be available even if a caller widens `tools` (belt to the
+# `tools` available-set suspenders). Phase 10b-2: Bash is now ALLOWED (sandboxed), but
+# the BACKGROUND-shell tools stay forbidden — 10b-2-1 is synchronous bash only.
+_FORBIDDEN_TOOLS = ["BashOutput", "KillShell"]
+
+# Per-command bash timeout (Phase 10b-2): the bundled CLI honours these env vars.
+# `default` applies when the model gives no timeout; `max` is a hard ceiling it cannot
+# exceed — bounds a hung/runaway command (decision D).
+DEFAULT_BASH_TIMEOUT_MS = 30_000
+MAX_BASH_TIMEOUT_MS = 120_000
 
 _DEFAULT_SYSTEM_PROMPT = (
     "You are a coding agent working strictly inside a single workspace directory. "
-    "Use the provided file tools to accomplish the task. Only read, create, or edit "
-    "files INSIDE the workspace — never touch paths outside it, and never use a shell. "
-    "Make the smallest change that satisfies the task. When you are done, reply with a "
-    "brief plain-text summary of what you changed and why."
+    "Use the provided file tools and the shell (Bash) to accomplish the task — you MAY "
+    "run commands to build, test, lint, or run code. Your shell runs in a SANDBOX: the "
+    "filesystem is restricted to the workspace and network access is denied, so keep "
+    "everything inside the workspace and do not depend on the network. Never modify the "
+    "repository's .git directory (it is off-limits). Make the smallest change that "
+    "satisfies the task. When you are done, reply with a brief plain-text summary of "
+    "what you changed and why."
 )
 
 _AUTH_HINT = (
@@ -89,6 +108,12 @@ class CodingResult:
                         the run short; `diff` holds whatever partial work exists. U2
                         routes this to human review; U1 marks the run failed.
     - "failed"        : the SDK call itself errored (auth/transport) — no usable result.
+
+    `commands` (Phase 10b-2) are the shell commands the agent ran — shown at review
+    alongside the diff, since a command's side effects need not appear in the diff.
+    `git_tampered` (Phase 10b-2) lists `.git` paths a command modified; the family
+    refuses to finalize such a run (the un-sandboxable hook code-execution vector). It
+    is set by the family (worker-side), never by the seam itself.
     """
 
     summary: str
@@ -98,6 +123,8 @@ class CodingResult:
     turns: int = 0
     tool_calls: int = 0
     cost_usd: float | None = None
+    commands: list[str] = field(default_factory=list)
+    git_tampered: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -111,6 +138,7 @@ class _Tally:
     subtype: str | None = None
     is_error: bool = False
     denials: int = 0
+    commands: list[str] = field(default_factory=list)
 
 
 def _make_permission_cb(root: Path, tools: tuple[str, ...], max_tool_calls: int, counter: dict):
@@ -162,6 +190,7 @@ def _tally(messages: list) -> _Tally:
     cost: float | None = None
     subtype: str | None = None
     is_error = False
+    commands: list[str] = []
     for m in messages:
         if isinstance(m, AssistantMessage):
             turns += 1
@@ -170,6 +199,11 @@ def _tally(messages: list) -> _Tally:
                     text_chunks.append(block.text)
                 elif isinstance(block, ToolUseBlock):
                     tool_calls += 1
+                    # Phase 10b-2: capture the shell commands the agent ran, for review.
+                    if block.name == "Bash":
+                        cmd = (block.input or {}).get("command")
+                        if cmd:
+                            commands.append(str(cmd))
         elif isinstance(m, ResultMessage):
             subtype = m.subtype
             is_error = bool(m.is_error)
@@ -181,7 +215,7 @@ def _tally(messages: list) -> _Tally:
     summary = (result_text or " ".join(text_chunks)).strip()
     return _Tally(
         summary=summary, turns=turns, tool_calls=tool_calls, cost_usd=cost,
-        subtype=subtype, is_error=is_error, denials=denials,
+        subtype=subtype, is_error=is_error, denials=denials, commands=commands,
     )
 
 
@@ -203,6 +237,56 @@ def _classify(tally: _Tally, *, max_turns: int, max_tool_calls: int, max_budget_
     if tally.is_error:
         return "failed"
     return "completed"
+
+
+def _build_options(
+    full_system_prompt: str,
+    root: Path,
+    *,
+    model: str,
+    tools: tuple[str, ...],
+    max_turns: int,
+    max_tool_calls: int,
+    max_budget_usd: float | None,
+    counter: dict,
+) -> ClaudeAgentOptions:
+    """Assemble the ClaudeAgentOptions for one bounded, SANDBOXED coding run.
+
+    PURE wiring — no SDK call — so the sandbox / Bash / timeout configuration is
+    unit-testable offline without the SDK (the real CONTAINMENT is an OS mechanism,
+    verified hands-on). The sandbox (`sandbox=...`) is the system's BORROWED isolation
+    (Seatbelt/bubblewrap): filesystem locked to the workspace, network denied
+    (no `allowedDomains`), and no command may escape it (`allowUnsandboxedCommands` False,
+    `excludedCommands` empty). Per-command timeouts ride env vars the bundled CLI honours.
+    """
+    return ClaudeAgentOptions(
+        system_prompt=full_system_prompt,
+        model=model,
+        # `tools` is the AVAILABLE set (llm.py lesson); the FILE-tool whitelist + path
+        # checks live in can_use_tool; Bash containment is the sandbox. disallowed_tools
+        # is belt-and-suspenders against the background-shell tools.
+        tools=list(tools),
+        disallowed_tools=list(_FORBIDDEN_TOOLS),
+        permission_mode="default",  # can_use_tool gates the file tools (requires streaming)
+        can_use_tool=_make_permission_cb(root, tools, max_tool_calls, counter),
+        max_turns=max_turns,
+        max_budget_usd=max_budget_usd,
+        cwd=str(root),  # the agent's working directory IS the workspace
+        add_dirs=[],  # nothing outside the workspace is reachable
+        setting_sources=[],  # ignore project/user settings for a clean run (mirror llm.py)
+        # Phase 10b-2 — borrowed OS sandbox for COMMANDS (Seatbelt/bubblewrap):
+        sandbox={
+            "enabled": True,
+            "allowUnsandboxedCommands": False,  # no command may bypass the sandbox
+            "excludedCommands": [],  # nothing runs outside it (not even git/docker)
+            # no "allowedDomains" -> network DENIED by default (decision E)
+        },
+        # Phase 10b-2 — per-command timeout the bundled CLI enforces (decision D):
+        env={
+            "BASH_DEFAULT_TIMEOUT_MS": str(DEFAULT_BASH_TIMEOUT_MS),
+            "BASH_MAX_TIMEOUT_MS": str(MAX_BASH_TIMEOUT_MS),
+        },
+    )
 
 
 async def _arun(task: str, options: ClaudeAgentOptions) -> list:
@@ -262,20 +346,10 @@ def run_coding_agent(
     )
     before = workspace.snapshot(root)
     counter: dict = {"n": 0}
-    options = ClaudeAgentOptions(
-        system_prompt=full_system_prompt,
-        model=model,
-        # `tools` is the AVAILABLE set (llm.py lesson); the whitelist + path checks live
-        # in can_use_tool. disallowed_tools is belt-and-suspenders against shell tools.
-        tools=list(tools),
-        disallowed_tools=list(_FORBIDDEN_TOOLS),
-        permission_mode="default",  # can_use_tool is the gate (requires streaming mode)
-        can_use_tool=_make_permission_cb(root, tools, max_tool_calls, counter),
-        max_turns=max_turns,
-        max_budget_usd=max_budget_usd,
-        cwd=str(root),  # the agent's working directory IS the workspace
-        add_dirs=[],  # nothing outside the workspace is reachable
-        setting_sources=[],  # ignore project/user settings for a clean run (mirror llm.py)
+    options = _build_options(
+        full_system_prompt, root,
+        model=model, tools=tools, max_turns=max_turns,
+        max_tool_calls=max_tool_calls, max_budget_usd=max_budget_usd, counter=counter,
     )
     try:
         messages = anyio.run(_arun, prompt, options)
@@ -303,4 +377,7 @@ def run_coding_agent(
         turns=tally.turns,
         tool_calls=tally.tool_calls,
         cost_usd=tally.cost_usd,
+        commands=tally.commands,
+        # git_tampered is computed by the family (worker-side, post-seam); the seam
+        # never sets it — see coding_orchestrator._coding_node.
     )

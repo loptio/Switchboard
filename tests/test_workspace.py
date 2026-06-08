@@ -130,6 +130,38 @@ def test_git_restore_reverts_modifications_and_removes_new_files(git_repo):
     assert (git_repo / "README.md").read_text(encoding="utf-8") == "# repo\n"  # reverted
 
 
+def test_git_security_snapshot_empty_for_non_git(tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert workspace.git_security_snapshot(plain) == {}
+
+
+def test_git_security_diff_detects_injected_hook_and_poisoned_config(git_repo):
+    before = workspace.git_security_snapshot(git_repo)
+    assert before  # a fresh repo has hooks/*.sample + config + HEAD + refs
+    # inject a hook (runs on the user's next git op) + poison config (alias code-exec)
+    (git_repo / ".git" / "hooks" / "pre-commit").write_text("#!/bin/sh\necho pwned\n", encoding="utf-8")
+    cfg = git_repo / ".git" / "config"
+    cfg.write_text(cfg.read_text(encoding="utf-8") + '\n[alias]\n\tx = "!evil"\n', encoding="utf-8")
+    changed = workspace.git_security_diff(before, workspace.git_security_snapshot(git_repo))
+    assert "hooks/pre-commit" in changed and "config" in changed
+
+
+def test_git_security_restore_neutralises_tampering(git_repo):
+    before = workspace.git_security_snapshot(git_repo)
+    hook = git_repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho pwned\n", encoding="utf-8")
+    cfg = git_repo / ".git" / "config"
+    cfg.write_text(cfg.read_text(encoding="utf-8") + '\n[alias]\n\tx = "!evil"\n', encoding="utf-8")
+    assert workspace.git_security_diff(before, workspace.git_security_snapshot(git_repo))  # tampered
+
+    workspace.git_security_restore(git_repo, before)
+    assert not hook.exists()  # the injected hook was removed
+    assert "evil" not in cfg.read_text(encoding="utf-8")  # config reverted to prior bytes
+    # fully clean again w.r.t. the before-snapshot
+    assert workspace.git_security_diff(before, workspace.git_security_snapshot(git_repo)) == []
+
+
 def test_git_restore_keeps_gitignored_files(git_repo):
     # clean -fd (no -x) must NOT remove .gitignore'd build artifacts.
     (git_repo / ".gitignore").write_text("build/\n", encoding="utf-8")

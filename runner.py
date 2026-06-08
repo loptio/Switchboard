@@ -276,6 +276,17 @@ def _finalize_coding(run: db.Run, result: CodingResult, cfg: Config, now: dateti
         log.exception("run %s failed during finalize", run.id)
         return db.mark_failed(run.id, str(exc), now=now)
 
+    # Phase 10b-2: a coding command that touched `.git` (hook/config code-exec vector)
+    # was neutralised in the orchestrator; REFUSE to finalize such a run regardless of
+    # status/approval. The diff + commands + the tampered paths are persisted above for
+    # inspection, but the run is failed (never kept/committed).
+    if result.git_tampered:
+        log.error("run %s: refusing to finalize — .git tampered: %s", run.id, result.git_tampered)
+        return db.mark_failed(
+            run.id,
+            f".git tampered (reverted, run refused): {', '.join(result.git_tampered)}",
+            now=now,
+        )
     if result.status != "completed":
         log.warning("run %s: coding agent did not complete (status=%s)", run.id, result.status)
         return db.mark_failed(run.id, f"coding agent stopped: {result.status}", now=now)

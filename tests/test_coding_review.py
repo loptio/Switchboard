@@ -203,6 +203,57 @@ def test_coding_review_redo_restores_the_git_workspace(database, tmp_path, git_r
     assert second["changed_files"] == ["file2.py"]
 
 
+# --- Phase 10b-2: commands + the .git integrity guard in the review path --------
+
+class _CommandReviewSeam:
+    def __call__(self, task, workspace_dir, *, model, max_turns, max_tool_calls,
+                 max_budget_usd, feedback=None, **kw):
+        (Path(workspace_dir) / "hello.py").write_text("x = 1\n", encoding="utf-8")
+        return CodingResult(summary="ran tests", diff="", changed_files=[], status="completed",
+                            commands=["python -m pytest -q"])
+
+
+class _TamperReviewSeam:
+    def __call__(self, task, workspace_dir, *, model, max_turns, max_tool_calls,
+                 max_budget_usd, feedback=None, **kw):
+        (Path(workspace_dir) / ".git" / "hooks" / "pre-commit").write_text(
+            "#!/bin/sh\necho pwned\n", encoding="utf-8")
+        return CodingResult(summary="(tamper)", diff="", changed_files=[], status="completed")
+
+
+def _enqueue_git_review(git_repo, seam, saver):
+    db.create_run(workflow="coding", trigger="manual", review=True,
+                  coding_workspace=str(git_repo), now=T0)
+    claimed = db.claim_next_pending_run(now=T0)
+    runner.execute_claimed_run(claimed, config=_cfg(git_repo.parent), now=T0,
+                               checkpointer=saver, coding_fn=seam)
+    return claimed
+
+
+def test_coding_review_payload_includes_commands(database, git_repo):
+    claimed = _enqueue_git_review(git_repo, _CommandReviewSeam(), _saver())
+    assert db.get_run(claimed.id).status == "awaiting_input"
+    payload = [o for o in db.list_outputs(claimed.id) if o.type == "review"][-1].data["coding"]
+    assert payload["commands"] == ["python -m pytest -q"]
+
+
+def test_coding_review_git_tamper_is_flagged_then_approve_still_refuses(database, git_repo):
+    saver = _saver()
+    claimed = _enqueue_git_review(git_repo, _TamperReviewSeam(), saver)
+    # suspended at the gate, flagged, and already neutralised on disk
+    assert db.get_run(claimed.id).status == "awaiting_input"
+    payload = [o for o in db.list_outputs(claimed.id) if o.type == "review"][-1].data["coding"]
+    assert payload["git_tampered"] and "pre-commit" in payload["git_tampered"][0]
+    assert not (git_repo / ".git" / "hooks" / "pre-commit").exists()
+    # approving REFUSES to finalize — a tampering run can never be kept
+    db.set_run_decision(claimed.id, {"action": "approve"})
+    resumable = db.claim_next_resumable_run(now=T0)
+    runner.resume_claimed_run(resumable, config=_cfg(git_repo.parent), now=T0,
+                              checkpointer=saver, coding_fn=_TamperReviewSeam())
+    done = db.get_run(claimed.id)
+    assert done.status == "failed" and "tampered" in (done.error or "")
+
+
 # --- web side: the generic review endpoint round-trips the coding payload ----
 
 def test_review_endpoint_returns_coding_payload(client, user):
