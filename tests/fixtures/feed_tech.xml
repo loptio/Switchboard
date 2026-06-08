@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Tech Feed</title>
+    <link>https://t.example</link>
+    <description>A sample tech feed.</description>
+    <item>
+      <title>Tech One</title>
+      <link>https://t.example/1</link>
+      <description>About tech one.</description>
+      <pubDate>Mon, 01 Jan 2026 10:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Tech Two</title>
+      <link>https://t.example/2</link>
+      <description>About tech two.</description>
+      <pubDate>Mon, 01 Jan 2026 11:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
