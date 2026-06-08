@@ -12,7 +12,24 @@
 }
 .actions {
   display: flex;
+  align-items: center;
   gap: var(--space-2);
+}
+
+/* Minimal trigger control (Phase 10a): workflow field + review toggle. */
+.workflowInput {
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  width: 160px;
+}
+.reviewToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--color-text-muted);
 }
 
 .hint {

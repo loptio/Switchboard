@@ -15,12 +15,17 @@ export function RunsDashboard() {
   const { runs, loading, error, softHint, refresh, addOptimistic } = useRuns();
   const [triggering, setTriggering] = useState(false);
   const [triggerError, setTriggerError] = useState<string | null>(null);
+  // Minimal trigger control (Phase 10a): pick a workflow (blank = the default news
+  // digest) and optionally request the human-review gate — needed to drive a coding
+  // run with diff review end-to-end from the web.
+  const [workflow, setWorkflow] = useState("");
+  const [review, setReview] = useState(false);
 
   async function onRunNow() {
     setTriggering(true);
     setTriggerError(null);
     try {
-      const run = await triggerRun();
+      const run = await triggerRun(workflow.trim() || undefined, review);
       addOptimistic(run); // show it immediately; polling will track status
     } catch (e) {
       setTriggerError(e instanceof ApiError ? e.detail : "Failed to trigger a run.");
@@ -34,6 +39,21 @@ export function RunsDashboard() {
       <div className={styles.toolbar}>
         <h1 className={styles.title}>Runs</h1>
         <div className={styles.actions}>
+          <input
+            aria-label="Workflow to run"
+            placeholder="workflow (default news)"
+            value={workflow}
+            onChange={(e) => setWorkflow(e.target.value)}
+            className={styles.workflowInput}
+          />
+          <label className={styles.reviewToggle}>
+            <input
+              type="checkbox"
+              checked={review}
+              onChange={(e) => setReview(e.target.checked)}
+            />
+            review
+          </label>
           <Button variant="secondary" onClick={() => void refresh()}>
             Refresh
           </Button>

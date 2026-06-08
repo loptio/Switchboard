@@ -42,11 +42,27 @@ import workflows
 from agent import Digest, summarize_agent, verify_agent
 from brief_agent import Brief, perspective_agent, summarize_item_agent
 from brief_orchestrator import build_brief
+from coding_agent import CodingResult
+from coding_orchestrator import (
+    DEFAULT_MAX_BUDGET_USD,
+    DEFAULT_MAX_TOOL_CALLS,
+    DEFAULT_MAX_TURNS,
+    build_coding,
+    resume_coding_review_run,
+    start_coding_review_run,
+)
 from config import Config, load_config
 from fetch import fetch_feed
 from mailer import send_brief, send_digest
 from orchestrator import ReviewOutcome, build_digest, resume_review_run, start_review_run
-from output import render_brief_markdown, render_markdown, write_brief, write_digest
+from output import (
+    render_brief_markdown,
+    render_coding_markdown,
+    render_markdown,
+    write_brief,
+    write_coding,
+    write_digest,
+)
 from sources import gather_sources
 
 log = logging.getLogger(__name__)
@@ -206,13 +222,80 @@ def _run_brief_pipeline(
     return _finalize_brief(run, brief, cfg, now)
 
 
-def _run_pipeline(run: db.Run, cfg: Config, now: datetime | None) -> db.Run:
+def _coding_to_data(result: CodingResult) -> dict:
+    """Structured form of the coding result for the Output.data (JSONB) column — the
+    web-facing contract (summary + diff + changed_files + status)."""
+    return asdict(result)
+
+
+def _coding_bounds(wf) -> dict:
+    """The coding agent's bounded-loop caps, from the WorkflowDef params (data)."""
+    params = wf.params or {}
+    return {
+        "max_turns": params.get("max_turns", DEFAULT_MAX_TURNS),
+        "max_tool_calls": params.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
+        "max_budget_usd": params.get("max_budget_usd", DEFAULT_MAX_BUDGET_USD),
+    }
+
+
+def _finalize_coding(run: db.Run, result: CodingResult, cfg: Config, now: datetime | None) -> db.Run:
+    """Finish a coding run: render → write local file → save Output (diff+summary) →
+    mark success/failed. The partial diff is ALWAYS persisted (inspectable) even on a
+    bounded stop. In U1 a non-`completed` status marks the run failed (no review gate
+    yet); U2 routes a `stopped_limit` with partial work to the human-review gate.
+    Never raises."""
+    try:
+        day = now.date() if now is not None else date.today()
+        markdown = render_coding_markdown(result)
+        write_coding(markdown, cfg.output_dir, day)
+        db.save_output(run.id, markdown, type="coding", data=_coding_to_data(result), now=now)
+    except Exception as exc:
+        log.exception("run %s failed during finalize", run.id)
+        return db.mark_failed(run.id, str(exc), now=now)
+
+    if result.status != "completed":
+        log.warning("run %s: coding agent did not complete (status=%s)", run.id, result.status)
+        return db.mark_failed(run.id, f"coding agent stopped: {result.status}", now=now)
+    final = db.mark_success(run.id, now=now)
+    log.info("run %s succeeded (coding, %d file(s) changed)", run.id, len(result.changed_files))
+    return final
+
+
+def _run_coding_pipeline(
+    run: db.Run, cfg: Config, now: datetime | None, *, wf, wf_arg, coding_fn=None
+) -> db.Run:
+    try:
+        task = cfg.coding_task
+        if not task.strip():
+            return db.mark_failed(
+                run.id, "coding run has no task (set CODING_TASK)", now=now
+            )
+        workspace = str(cfg.coding_workspace)
+        # The seam (coding_agent.run_coding_agent) is the only Agent SDK caller; it is
+        # confined to `workspace` and bounded by the WorkflowDef caps. wf_arg=None => the
+        # prebuilt module graph (coding is never web-synthesized). `coding_fn` is
+        # injectable for offline tests (a deterministic fake — no SDK); None => the real
+        # seam (build_coding's default).
+        extra = {"coding_fn": coding_fn} if coding_fn is not None else {}
+        result = build_coding(
+            task, workspace, model=cfg.model, wf=wf_arg, **_coding_bounds(wf), **extra
+        )
+    except Exception as exc:
+        log.exception("run %s failed", run.id)
+        return db.mark_failed(run.id, str(exc), now=now)
+    return _finalize_coding(run, result, cfg, now)
+
+
+def _run_pipeline(
+    run: db.Run, cfg: Config, now: datetime | None, *, coding_fn=None
+) -> db.Run:
     """Run the (non-interactive) pipeline for an already-running `run`.
 
     Phase 8: resolve the WorkflowDef by id (DB override, else code default), select
-    the harness by its `output_ref` ('brief' → the brief workflow, else digest), and
-    pass the resolved def to the generic engine (None for a code default → the
-    orchestrator's prebuilt module graph, byte-for-byte the pre-Phase-8 path).
+    the harness by its `output_ref` ('brief' → the brief workflow, 'coding' → the
+    coding family, else digest), and pass the resolved def to the generic engine (None
+    for a code default → the orchestrator's prebuilt module graph, byte-for-byte the
+    pre-Phase-8 path).
 
     Never raises: an unknown workflow or a pipeline failure is caught, recorded
     (status=failed) and the failed Run returned, so one bad run never crashes the
@@ -229,6 +312,8 @@ def _run_pipeline(run: db.Run, cfg: Config, now: datetime | None) -> db.Run:
     wf_arg = None if wf is workflows.WORKFLOWS.get(run.workflow) else wf
     if wf.output_ref == "brief":
         return _run_brief_pipeline(run, cfg, now, wf=wf, wf_arg=wf_arg)
+    if wf.output_ref == "coding":
+        return _run_coding_pipeline(run, cfg, now, wf=wf, wf_arg=wf_arg, coding_fn=coding_fn)
     return _run_digest_pipeline(run, cfg, now, wf=wf, wf_arg=wf_arg)
 
 
@@ -260,6 +345,7 @@ def execute_claimed_run(
     checkpointer=None,
     summarize_fn=None,
     verify_fn=None,
+    coding_fn=None,
 ) -> db.Run:
     """Execute a run the worker already CLAIMED (status=running); return the Run.
 
@@ -282,8 +368,9 @@ def execute_claimed_run(
         return _run_review_claimed(
             run, cfg, now,
             checkpointer=checkpointer, summarize_fn=summarize_fn, verify_fn=verify_fn,
+            coding_fn=coding_fn,
         )
-    return _run_pipeline(run, cfg, now)
+    return _run_pipeline(run, cfg, now, coding_fn=coding_fn)
 
 
 # --- human-in-the-loop: interruptible run + resume (Phase 5 Unit 3) ----------
@@ -339,6 +426,18 @@ def _apply_outcome(
         log.info("run %s suspended for human review (awaiting_input)", run.id)
         return suspended, outcome
     return _finalize(run, outcome.digest, cfg, now), outcome
+
+
+def _apply_coding_outcome(run: db.Run, outcome, cfg: Config, now: datetime | None) -> db.Run:
+    """Apply a coding review outcome: suspend at the diff gate (awaiting_input, the
+    {"coding": <CodingResult>} payload persisted as a type="review" Output) or finalize
+    the approved result. Reuses the Phase 8 suspend bookkeeping verbatim."""
+    if outcome.status == "suspended":
+        _save_review_payload(run.id, outcome.payload, now)
+        suspended = db.mark_awaiting_input(run.id)
+        log.info("run %s suspended for coding diff review (awaiting_input)", run.id)
+        return suspended
+    return _finalize_coding(run, outcome.result, cfg, now)
 
 
 def run_review_once(
@@ -433,17 +532,26 @@ def _run_review_claimed(
     checkpointer=None,
     summarize_fn=None,
     verify_fn=None,
+    coding_fn=None,
 ) -> db.Run:
     """Start an interruptible REVIEW run the worker claimed: run the auto-loop, then
     suspend at the human-review gate (awaiting_input, payload persisted) or finalize.
-    Review is digest-only — a non-digest def falls back to the straight pipeline."""
+    Review is digest-only in U1; U2 adds the coding diff-review gate (coding_fn). A
+    family with no review gate falls back to the straight pipeline."""
     try:
         wf = defs_resolve.resolve_workflow_def(run.workflow)
     except KeyError:
         log.exception("run %s: unknown workflow %r", run.id, run.workflow)
         return db.mark_failed(run.id, f"unknown workflow {run.workflow!r}", now=now)
+    if wf.output_ref == "coding":
+        wf_arg = None if wf is workflows.WORKFLOWS.get(run.workflow) else wf
+        return _run_coding_review_claimed(
+            run, cfg, now, wf=wf, wf_arg=wf_arg, checkpointer=checkpointer, coding_fn=coding_fn
+        )
     if wf.output_ref != "digest":
-        return _run_pipeline(run, cfg, now)  # the review gate is digest-only
+        # a family with no review gate: take the straight pipeline (coding_fn threaded
+        # so a non-coding family is unaffected).
+        return _run_pipeline(run, cfg, now, coding_fn=coding_fn)
     wf_arg = None if wf is workflows.WORKFLOWS.get(run.workflow) else wf
     try:
         with _checkpointer_cm(checkpointer) as cp:
@@ -465,6 +573,36 @@ def _run_review_claimed(
         return db.mark_failed(run.id, str(exc), now=now)
 
 
+def _run_coding_review_claimed(
+    run: db.Run,
+    cfg: Config,
+    now: datetime | None,
+    *,
+    wf,
+    wf_arg,
+    checkpointer=None,
+    coding_fn=None,
+) -> db.Run:
+    """Start an interruptible CODING review run the worker claimed (U2): run one bounded
+    coding loop, then suspend at the diff-review gate (awaiting_input, the diff payload
+    persisted) or finalize. Mirrors _run_review_claimed for the coding family."""
+    task = cfg.coding_task
+    if not task.strip():
+        return db.mark_failed(run.id, "coding run has no task (set CODING_TASK)", now=now)
+    workspace_dir = str(cfg.coding_workspace)
+    extra = {"coding_fn": coding_fn} if coding_fn is not None else {}
+    try:
+        with _checkpointer_cm(checkpointer) as cp:
+            outcome = start_coding_review_run(
+                task, workspace_dir, model=cfg.model, thread_id=run.id, checkpointer=cp,
+                wf=wf_arg, **_coding_bounds(wf), **extra,
+            )
+        return _apply_coding_outcome(run, outcome, cfg, now)
+    except Exception as exc:
+        log.exception("run %s failed", run.id)
+        return db.mark_failed(run.id, str(exc), now=now)
+
+
 def resume_claimed_run(
     run: db.Run,
     *,
@@ -473,10 +611,12 @@ def resume_claimed_run(
     checkpointer=None,
     summarize_fn=None,
     verify_fn=None,
+    coding_fn=None,
 ) -> db.Run:
     """Resume an already-CLAIMED awaiting_input run with its web-written
     pending_decision (the worker half of the web resume handoff). Clears the decision
-    once consumed; re-suspends (awaiting_input) on a redo, finalizes on approve."""
+    once consumed; re-suspends (awaiting_input) on a redo, finalizes on approve.
+    Dispatches by family: coding diff-review (U2) vs digest review."""
     cfg = config or load_config()
     decision = run.pending_decision or {}
     try:
@@ -485,6 +625,10 @@ def resume_claimed_run(
         return db.mark_failed(run.id, f"unknown workflow {run.workflow!r}", now=now)
     wf_arg = None if wf is workflows.WORKFLOWS.get(run.workflow) else wf
     log.info("run %s resumed from web (decision=%s)", run.id, decision.get("action"))
+    if wf.output_ref == "coding":
+        return _resume_coding_claimed(
+            run, cfg, now, decision, wf_arg=wf_arg, checkpointer=checkpointer, coding_fn=coding_fn
+        )
     try:
         with _checkpointer_cm(checkpointer) as cp:
             fns = _agent_fns_for(wf, cfg)
@@ -498,6 +642,31 @@ def resume_claimed_run(
             )
         db.clear_run_decision(run.id)  # consumed
         return _apply_outcome(run, outcome, cfg, now)[0]
+    except Exception as exc:
+        log.exception("run %s failed during resume", run.id)
+        return db.mark_failed(run.id, str(exc), now=now)
+
+
+def _resume_coding_claimed(
+    run: db.Run,
+    cfg: Config,
+    now: datetime | None,
+    decision: dict,
+    *,
+    wf_arg,
+    checkpointer=None,
+    coding_fn=None,
+) -> db.Run:
+    """Resume a claimed awaiting_input CODING run with its web-written decision (U2):
+    approve → finalize the diff; redo (+feedback) → a fresh bounded loop, re-suspended."""
+    extra = {"coding_fn": coding_fn} if coding_fn is not None else {}
+    try:
+        with _checkpointer_cm(checkpointer) as cp:
+            outcome = resume_coding_review_run(
+                thread_id=run.id, checkpointer=cp, decision=decision, wf=wf_arg, **extra
+            )
+        db.clear_run_decision(run.id)  # consumed
+        return _apply_coding_outcome(run, outcome, cfg, now)
     except Exception as exc:
         log.exception("run %s failed during resume", run.id)
         return db.mark_failed(run.id, str(exc), now=now)

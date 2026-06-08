@@ -118,15 +118,24 @@ export interface Family {
   state: string;
 }
 
-// The human-review suspend payload (GET /runs/:id/review).
+// The human-review suspend payload (GET /runs/:id/review). A digest review carries a
+// candidate `digest` (+ open `issues`); a coding review (Phase 10a) carries the
+// `coding` diff result. The panel renders whichever is present.
 export interface ReviewIssue {
   index: number | null;
   kind: string;
   detail: string;
 }
+export interface CodingReviewPayload {
+  summary: string;
+  diff: string;
+  changed_files: string[];
+  status: string; // "completed" | "stopped_limit" | "failed"
+}
 export interface ReviewPayload {
   digest?: { items: { title: string; link: string; one_line_summary: string }[] };
   issues?: ReviewIssue[];
+  coding?: CodingReviewPayload;
 }
 
 export interface Manifest {

@@ -26,6 +26,11 @@ DEFAULT_MODEL = "claude-opus-4-8"
 # perspective takes). Provenance (title/link/source/domain) is never translated.
 # Default Simplified Chinese; switch to e.g. "繁體中文" / "English" via OUTPUT_LANGUAGE.
 DEFAULT_LANGUAGE = "简体中文"
+# Coding family (Phase 10a) intake = a configured workspace directory + a task string
+# (blueprint decision F: a configured/temp dir, not a git clone). A coding run is
+# triggered with just a workflow id; the worker reads the task + workspace from here,
+# so no per-run schema change is needed. The agent is confined to this directory.
+DEFAULT_CODING_WORKSPACE = "coding_workspace"
 
 
 @dataclass(frozen=True)
@@ -35,6 +40,8 @@ class Config:
     output_dir: Path
     model: str
     output_language: str = DEFAULT_LANGUAGE
+    coding_task: str = ""
+    coding_workspace: Path = Path(DEFAULT_CODING_WORKSPACE)
 
 
 def _positive_int(name: str, default: int) -> int:
@@ -58,4 +65,6 @@ def load_config() -> Config:
         output_dir=Path(os.getenv("OUTPUT_DIR", DEFAULT_OUTPUT_DIR)),
         model=os.getenv("MODEL", DEFAULT_MODEL),
         output_language=os.getenv("OUTPUT_LANGUAGE", DEFAULT_LANGUAGE),
+        coding_task=os.getenv("CODING_TASK", ""),
+        coding_workspace=Path(os.getenv("CODING_WORKSPACE", DEFAULT_CODING_WORKSPACE)),
     )

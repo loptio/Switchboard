@@ -178,12 +178,53 @@ BRIEF_DEF = WorkflowDef(
 )
 
 
+# --- coding workflow (Phase 10a): one bounded coding-agent node ----------------
+# A NEW family (blueprint decision 14: new shape = new code) — the first workflow to
+# cross the tools=[] boundary. `coding_agent` is a new node-kind whose handler calls
+# the coding seam (coding_agent.run_coding_agent) to run a bounded, workspace-confined
+# agent loop; the generic engine compiles it as just another handler-running node.
+# Bounds (max_turns / tool-calls / budget) live here as data (coding_orchestrator's
+# build_coding defaults must agree). intake = a workspace dir (runner-driven from
+# Config, not a source_ref); output_ref="coding" selects the coding harness. U1 is
+# linear (coding → finalize_gate → END); U2 adds a human_review diff gate off
+# finalize_gate. NOT registered in the Phase 8 manifest (the coding family is code,
+# not a web-synthesizable def) — so it never enters the web palette/validator.
+CODING_DEF = WorkflowDef(
+    id="coding",
+    entry="coding",
+    params={"max_turns": 12, "max_tool_calls": 40, "max_budget_usd": 1.0},
+    source_ref=None,
+    output_ref="coding",
+    nodes=(
+        Node(
+            "coding", "coding_agent",
+            handler_ref="coding_run", config_key="coding_fn",
+            next="finalize_gate",
+        ),
+        # finalize_gate routes to the human diff-review gate when review is ON (U2),
+        # else straight to END (the non-review default — byte-for-byte the U1 path).
+        Node(
+            "finalize_gate", "step",
+            handler_ref="coding_finalize_gate",
+            branch=Branch("coding_route_after_finalize_gate", {"human_review": "human_review", "end": END}),
+        ),
+        # human_review: approve → END; redo (with feedback) → a fresh bounded coding loop.
+        Node(
+            "human_review", "human_review",
+            handler_ref="coding_human_review",
+            branch=Branch("coding_route_after_human_review", {"end": END, "coding": "coding"}),
+        ),
+    ),
+)
+
+
 # Looked up by id (brief §6 footnote: runner finds the def by run.workflow). "news"
-# is the legacy digest label; "digest" is its alias.
+# is the legacy digest label; "digest" is its alias; "coding" is the Phase 10a family.
 WORKFLOWS: dict[str, WorkflowDef] = {
     "news": DIGEST_DEF,
     "digest": DIGEST_DEF,
     "brief": BRIEF_DEF,
+    "coding": CODING_DEF,
 }
 
 

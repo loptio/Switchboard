@@ -75,6 +75,27 @@ describe("WorkflowsPage", () => {
     await waitFor(() => expect(triggerRun).toHaveBeenCalledWith("mine", false));
   });
 
+  it("offers a review run for the coding family (Phase 10a)", async () => {
+    const user = userEvent.setup();
+    vi.mocked(listWorkflowDefs).mockResolvedValue([
+      wf({
+        def_id: "coding",
+        name: "coding",
+        definition: {
+          id: "coding",
+          entry: "coding",
+          params: {},
+          output_ref: "coding",
+          nodes: [{ id: "coding", kind: "step" }],
+        },
+      }),
+    ]);
+    vi.mocked(triggerRun).mockResolvedValue({ id: "c1" } as Run);
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /run \(review\)/i }));
+    await waitFor(() => expect(triggerRun).toHaveBeenCalledWith("coding", true));
+  });
+
   it("clones a built-in (prompting for a new id)", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("prompt", () => "my-news");

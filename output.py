@@ -16,6 +16,7 @@ from pathlib import Path
 
 from agent import Digest
 from brief_agent import Brief
+from coding_agent import CodingResult
 
 
 def _inline(text: str) -> str:
@@ -62,6 +63,30 @@ def render_brief_markdown(brief: Brief) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def render_coding_markdown(result: CodingResult) -> str:
+    """Render a CodingResult into markdown: a summary, the changed-file list, the status
+    (so a stopped-at-limit run is visible — hardening #3), and the unified diff in a
+    fenced block (what the human reviews in U2)."""
+    lines = [
+        "# Coding run",
+        "",
+        f"**Status:** {result.status}",
+        "",
+        "## Summary",
+        "",
+        _inline(result.summary) if result.summary else "_(no summary)_",
+        "",
+        "## Changed files",
+        "",
+    ]
+    if result.changed_files:
+        lines.extend(f"- `{f}`" for f in result.changed_files)
+    else:
+        lines.append("_No files changed._")
+    lines.extend(["", "## Diff", "", "```diff", result.diff.rstrip("\n") if result.diff else "", "```"])
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _write(markdown: str, output_dir: Path, name: str) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / name
@@ -77,3 +102,8 @@ def write_digest(markdown: str, output_dir: Path, day: date) -> Path:
 def write_brief(markdown: str, output_dir: Path, day: date) -> Path:
     """Write the markdown to output_dir/brief-YYYY-MM-DD.md and return the path."""
     return _write(markdown, output_dir, f"brief-{day.isoformat()}.md")
+
+
+def write_coding(markdown: str, output_dir: Path, day: date) -> Path:
+    """Write the markdown to output_dir/coding-YYYY-MM-DD.md and return the path."""
+    return _write(markdown, output_dir, f"coding-{day.isoformat()}.md")

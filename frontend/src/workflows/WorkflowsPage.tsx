@@ -86,7 +86,8 @@ export function WorkflowsPage() {
               </div>
               <div className={styles.actions}>
                 <Button onClick={() => void run(wf.def_id)}>Run now</Button>
-                {wf.definition.output_ref === "digest" && (
+                {(wf.definition.output_ref === "digest" ||
+                  wf.definition.output_ref === "coding") && (
                   <Button variant="secondary" onClick={() => void run(wf.def_id, true)}>
                     Run (review)
                   </Button>

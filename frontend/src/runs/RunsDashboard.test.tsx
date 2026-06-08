@@ -70,6 +70,20 @@ describe("RunsDashboard", () => {
     expect(triggerRun).toHaveBeenCalledOnce();
   });
 
+  it("triggers a chosen workflow with the review gate (coding)", async () => {
+    const user = userEvent.setup();
+    vi.mocked(listRuns).mockResolvedValue([]);
+    vi.mocked(triggerRun).mockResolvedValue(makeRun({ id: "c1", workflow: "coding" }));
+
+    renderDashboard();
+    await screen.findByText(/no runs yet/i);
+    await user.type(screen.getByLabelText(/workflow to run/i), "coding");
+    await user.click(screen.getByRole("checkbox", { name: /review/i }));
+    await user.click(screen.getByRole("button", { name: /run now/i }));
+
+    await waitFor(() => expect(triggerRun).toHaveBeenCalledWith("coding", true));
+  });
+
   it("polls until a pending run reaches success", async () => {
     pollConfig.intervalMs = 15; // poll fast under real timers
     vi.mocked(listRuns)

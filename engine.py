@@ -58,7 +58,11 @@ def build_graph(
 
 def _add_nodes(g: StateGraph, nodes, *, node_handlers: dict, composers: dict) -> None:
     for node in nodes:
-        if node.kind in ("step", "human_review"):
+        if node.kind in ("step", "human_review", "coding_agent"):
+            # `coding_agent` (Phase 10a) is structurally a handler-running node with an
+            # out-edge — the agent LOOP lives in the seam the handler calls, not here, so
+            # the engine treats it exactly like a step (blueprint decision 14: add a kind,
+            # don't rewrite the engine).
             try:
                 handler = node_handlers[node.handler_ref]
             except KeyError:

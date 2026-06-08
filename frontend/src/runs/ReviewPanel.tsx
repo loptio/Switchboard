@@ -2,11 +2,47 @@ import { useState } from "react";
 
 import { ApiError } from "../api/client";
 import { resumeRun } from "../api/endpoints";
-import type { ReviewPayload } from "../api/types";
+import type { CodingReviewPayload, ReviewPayload } from "../api/types";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
 import { ErrorBanner } from "../components/ErrorBanner";
 import styles from "./RunDetail.module.css";
+
+/** Coding diff-review body (Phase 10a): the agent's summary, the changed files, the
+ *  status (a bounded `stopped_limit` stop is flagged prominently — hardening #3), and
+ *  the unified diff. The human approves the diff or sends it back with feedback. */
+function CodingDiff({ coding }: { coding: CodingReviewPayload }) {
+  const stopped = coding.status !== "completed";
+  return (
+    <div>
+      {stopped && (
+        <p role="alert" className={styles.limitBanner}>
+          ⚠ The agent stopped at a limit/budget (<code>{coding.status}</code>) — this is
+          partial work. Review the diff before approving.
+        </p>
+      )}
+      <p>{coding.summary || "(no summary)"}</p>
+      <strong>Changed files</strong>
+      {coding.changed_files.length > 0 ? (
+        <ul>
+          {coding.changed_files.map((f, i) => (
+            <li key={i}>
+              <code>{f}</code>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p>
+          <em>No files changed.</em>
+        </p>
+      )}
+      <strong>Diff</strong>
+      <pre className={styles.diff} aria-label="diff">
+        {coding.diff || "(empty diff)"}
+      </pre>
+    </div>
+  );
+}
 
 /** Human-review gate UI for an awaiting_input run: show the candidate + approve or
  *  send it back with feedback. The decision is handed to the worker via the API. */
@@ -38,33 +74,40 @@ export function ReviewPanel({
 
   const items = review?.digest?.items ?? [];
   const issues = review?.issues ?? [];
+  const coding = review?.coding;
 
   return (
     <Card>
       <h2 className={styles.outputTitle}>Human review</h2>
       {error && <ErrorBanner message={error} />}
       <p>Review the candidate below, then approve it or send it back with feedback.</p>
-      <ul>
-        {items.map((it, i) => (
-          <li key={i}>
-            <a href={it.link} target="_blank" rel="noreferrer">
-              {it.title}
-            </a>{" "}
-            — {it.one_line_summary}
-          </li>
-        ))}
-      </ul>
-      {issues.length > 0 && (
-        <div>
-          <strong>Open issues</strong>
+      {coding ? (
+        <CodingDiff coding={coding} />
+      ) : (
+        <>
           <ul>
-            {issues.map((iss, i) => (
+            {items.map((it, i) => (
               <li key={i}>
-                [{iss.kind}] {iss.detail}
+                <a href={it.link} target="_blank" rel="noreferrer">
+                  {it.title}
+                </a>{" "}
+                — {it.one_line_summary}
               </li>
             ))}
           </ul>
-        </div>
+          {issues.length > 0 && (
+            <div>
+              <strong>Open issues</strong>
+              <ul>
+                {issues.map((iss, i) => (
+                  <li key={i}>
+                    [{iss.kind}] {iss.detail}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
       )}
       <textarea
         aria-label="Feedback for a redo"

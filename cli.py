@@ -71,6 +71,13 @@ def _run_once(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
+        if args.workflow == "coding":
+            print(
+                "error: coding diff review runs via the web control plane — trigger the "
+                "coding workflow with review, then approve/redo in the run detail",
+                file=sys.stderr,
+            )
+            return 1
         run, outcome = runner.run_review_once()
         return _report_review(run, outcome)
     run = runner.run_once(trigger="manual", workflow=args.workflow)
@@ -175,9 +182,10 @@ def build_parser() -> argparse.ArgumentParser:
     ro = sub.add_parser("run-once", help="run the workflow once now (manual trigger)")
     ro.add_argument(
         "--workflow",
-        choices=["digest", "brief", "news"],
+        choices=["digest", "brief", "news", "coding"],
         default="digest",
-        help="which workflow to run (default digest; 'news' is the legacy digest alias)",
+        help="which workflow to run (default digest; 'news' is the legacy digest alias; "
+        "'coding' needs CODING_TASK + CODING_WORKSPACE env)",
     )
     ro.add_argument(
         "--review",

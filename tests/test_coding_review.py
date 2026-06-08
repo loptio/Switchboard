@@ -1,0 +1,151 @@
+"""Coding diff-review human-in-the-loop (Phase 10a, U2) — offline, fake seam.
+
+Reuses the Phase 8 web-HITL mechanism for the coding family: the web enqueues a
+review-flagged coding run + records an approve/redo decision; the worker claims,
+runs ONE bounded coding loop, suspends at the diff gate (awaiting_input, the
+{"coding": <CodingResult>} payload persisted), then resumes — approve → finalize,
+redo → fresh bounded loop re-suspended. An InMemorySaver + a deterministic fake seam
+keep it offline (no Postgres, no SDK). Mirrors test_web_review.
+"""
+
+from datetime import datetime, timezone
+from pathlib import Path
+
+import db
+import runner
+import workspace
+from coding_agent import CodingResult
+from config import Config
+from conftest import csrf_headers, login
+
+T0 = datetime(2026, 6, 8, 6, 0, tzinfo=timezone.utc)
+
+
+def _cfg(tmp_path, task="add a hello module") -> Config:
+    return Config(
+        feed_url="x", count=1, output_dir=tmp_path / "out", model="m",
+        coding_task=task, coding_workspace=tmp_path / "ws",
+    )
+
+
+class _FakeSeam:
+    """Writes a real file (content varies with feedback so a redo yields a real diff)
+    and returns the real before/after diff; records calls + the feedback it saw."""
+
+    def __init__(self, status="completed"):
+        self.status = status
+        self.calls = 0
+        self.feedbacks: list = []
+
+    def __call__(self, task, workspace_dir, *, model, max_turns, max_tool_calls,
+                 max_budget_usd, feedback=None, **kw):
+        self.calls += 1
+        self.feedbacks.append(feedback)
+        root = Path(workspace_dir)
+        root.mkdir(parents=True, exist_ok=True)
+        before = workspace.snapshot(root)
+        content = f"# {task}\n"
+        if feedback:
+            content += f"# feedback: {feedback}\n"
+        content += "def hello():\n    return 'hi'\n"
+        (root / "hello.py").write_text(content, encoding="utf-8")
+        after = workspace.snapshot(root)
+        diff, changed = workspace.compute_diff(before, after)
+        return CodingResult(
+            summary=f"wrote hello.py ({task})", diff=diff, changed_files=changed, status=self.status
+        )
+
+
+def _saver():
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    return InMemorySaver()
+
+
+def _enqueue_and_suspend(cfg, seam, saver):
+    db.create_run(workflow="coding", trigger="manual", review=True, now=T0)
+    claimed = db.claim_next_pending_run(now=T0)
+    assert claimed.review is True
+    runner.execute_claimed_run(claimed, config=cfg, now=T0, checkpointer=saver, coding_fn=seam)
+    return claimed
+
+
+# --- worker side: suspend + resume in one process --------------------------
+
+def test_coding_review_suspends_then_approve_finalizes(database, tmp_path):
+    cfg = _cfg(tmp_path)
+    seam = _FakeSeam()
+    saver = _saver()
+
+    claimed = _enqueue_and_suspend(cfg, seam, saver)
+    suspended = db.get_run(claimed.id)
+    assert suspended.status == "awaiting_input"
+    reviews = [o for o in db.list_outputs(claimed.id) if o.type == "review"]
+    assert len(reviews) == 1
+    payload = reviews[0].data["coding"]
+    assert payload["status"] == "completed"
+    assert payload["changed_files"] == ["hello.py"]
+    assert "+def hello" in payload["diff"]
+    assert seam.calls == 1
+
+    # web approves; worker drains the resumable run -> finalize.
+    db.set_run_decision(claimed.id, {"action": "approve"})
+    resumable = db.claim_next_resumable_run(now=T0)
+    assert resumable.id == claimed.id
+    runner.resume_claimed_run(resumable, config=cfg, now=T0, checkpointer=saver, coding_fn=seam)
+    done = db.get_run(claimed.id)
+    assert done.status == "success"
+    assert done.pending_decision is None  # decision consumed
+    assert seam.calls == 1  # approve re-runs no agent
+    deliver = [o for o in db.list_outputs(claimed.id) if o.type == "coding"]
+    assert len(deliver) == 1 and "hello.py" in deliver[0].content
+
+
+def test_coding_review_redo_re_suspends_with_feedback(database, tmp_path):
+    cfg = _cfg(tmp_path)
+    seam = _FakeSeam()
+    saver = _saver()
+
+    claimed = _enqueue_and_suspend(cfg, seam, saver)
+    assert db.get_run(claimed.id).status == "awaiting_input"
+
+    # web asks for a redo with feedback; worker resumes -> fresh loop -> re-suspend.
+    db.set_run_decision(claimed.id, {"action": "redo", "feedback": "use a class"})
+    resumable = db.claim_next_resumable_run(now=T0)
+    runner.resume_claimed_run(resumable, config=cfg, now=T0, checkpointer=saver, coding_fn=seam)
+
+    again = db.get_run(claimed.id)
+    assert again.status == "awaiting_input"
+    assert again.pending_decision is None
+    assert seam.calls == 2  # the redo re-ran the coding loop
+    assert seam.feedbacks == [None, "use a class"]  # feedback reached the seam
+    reviews = [o for o in db.list_outputs(claimed.id) if o.type == "review"]
+    assert "use a class" in reviews[-1].data["coding"]["diff"]  # real diff reflects the redo
+
+
+def test_coding_review_stopped_limit_routes_to_review_not_failure(database, tmp_path):
+    # hardening #3 / decision F3: a bounded stop with partial work goes to the human
+    # gate (so the diff is inspectable), NOT a hard failure.
+    cfg = _cfg(tmp_path)
+    seam = _FakeSeam(status="stopped_limit")
+    saver = _saver()
+
+    claimed = _enqueue_and_suspend(cfg, seam, saver)
+    suspended = db.get_run(claimed.id)
+    assert suspended.status == "awaiting_input"  # not failed
+    reviews = [o for o in db.list_outputs(claimed.id) if o.type == "review"]
+    assert reviews[-1].data["coding"]["status"] == "stopped_limit"
+
+
+# --- web side: the generic review endpoint round-trips the coding payload ----
+
+def test_review_endpoint_returns_coding_payload(client, user):
+    login(client)
+    run = db.create_run(workflow="coding", trigger="manual")
+    db.save_output(
+        run.id, "{}", type="review",
+        data={"coding": {"summary": "s", "diff": "--- a\n+++ b\n+x\n", "changed_files": ["x.py"], "status": "completed"}},
+    )
+    rev = client.get(f"/runs/{run.id}/review", headers=csrf_headers(client))
+    assert rev.status_code == 200
+    assert rev.json()["coding"]["changed_files"] == ["x.py"]
