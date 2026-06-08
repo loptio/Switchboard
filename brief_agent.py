@@ -36,6 +36,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from agent import AgentContractError  # shared contract-violation type
+from agentdefs import AGENT_DEFS, render
 from config import DEFAULT_LANGUAGE
 from llm import complete
 from sources import SourceItem
@@ -87,15 +88,8 @@ def _short(text: str, limit: int = FILTER_SUMMARY_CHARS) -> str:
 
 
 # --- filter agent -----------------------------------------------------------
-FILTER_SYSTEM_PROMPT = (
-    "You are a sharp editor curating a high-signal, cross-domain briefing. From a "
-    "list of candidate items you keep ONLY those of genuine, lasting value and drop "
-    "noise: hype, clickbait, pure promotion, rumor, and low-information filler. You "
-    "judge each item ONLY from its given title, source and short summary — never "
-    "outside knowledge. You favor covering several domains over piling up items from "
-    'one. Respond with ONLY a JSON object {"keep": [<1-based index>, ...]} listing '
-    "the kept indices, best first. No prose, no markdown, no code fences."
-)
+# The filter system prompt is a constant — sourced as data from agentdefs.
+FILTER_SYSTEM_PROMPT = AGENT_DEFS["filter"].system_prompt
 
 
 def _build_filter_prompt(items: list[SourceItem], keep_cap: int) -> str:
@@ -172,13 +166,8 @@ def filter_agent(
 
 # --- summary agent ----------------------------------------------------------
 def _summary_system_prompt(language: str) -> str:
-    return (
-        "You summarize a single news item in one or two concise sentences, written "
-        f"in {language} — write the summary in {language} even if the source is in "
-        "another language. Base the summary ONLY on the provided title and text — do "
-        "not add facts, numbers, or claims that are not present (no fabrication). "
-        "Respond with ONLY the summary sentence(s): no preamble, no JSON, no markdown."
-    )
+    # Prompt TEXT is data (agentdefs); this renders the {language} marker.
+    return render(AGENT_DEFS["summarize_item"].system_prompt, language=language)
 
 
 def _build_summary_prompt(item: SourceItem) -> str:
@@ -187,6 +176,18 @@ def _build_summary_prompt(item: SourceItem) -> str:
         ensure_ascii=False,
         indent=2,
     )
+
+
+def parse_summary(raw: str) -> str:
+    """Validate a single-item summary reply -> a non-empty summary string.
+
+    The brief's summary agent has no structured contract (it returns prose), so the
+    'parser' is just a strip + non-empty check. Registered by name so the generic
+    orchestrator can resolve it like any other parser."""
+    summary = raw.strip()
+    if not summary:
+        raise AgentContractError("summary agent returned an empty summary")
+    return summary
 
 
 def summarize_item_agent(
@@ -202,22 +203,13 @@ def summarize_item_agent(
         system_prompt=_summary_system_prompt(language),
         model=model,
     )
-    summary = raw.strip()
-    if not summary:
-        raise AgentContractError("summary agent returned an empty summary")
-    return summary
+    return parse_summary(raw)
 
 
 # --- perspective agent (one call per stance) --------------------------------
 def _perspective_system_prompt(stance: str, language: str) -> str:
-    return (
-        "You are a sharp analyst. Analyze the given news item strictly through the "
-        f"lens of its {stance} implications. Give ONE specific, insightful take of two "
-        f"to three sentences, written in {language} (even if the source is in another "
-        "language). Ground every claim in THIS item's content — do not fabricate facts "
-        "beyond it (you may reason about implications, but tie them to the item). "
-        "Respond with ONLY your take: no preamble, no JSON, no markdown."
-    )
+    # Prompt TEXT is data (agentdefs); this renders the {stance}/{language} markers.
+    return render(AGENT_DEFS["perspective"].system_prompt, stance=stance, language=language)
 
 
 def _build_perspective_prompt(item: SourceItem) -> str:
@@ -226,6 +218,16 @@ def _build_perspective_prompt(item: SourceItem) -> str:
         ensure_ascii=False,
         indent=2,
     )
+
+
+def parse_perspective(raw: str, stance: str) -> Perspective:
+    """Validate a perspective reply -> a Perspective. `stance` is set by us (the
+    model writes only the `take`), so the parser takes it as context. Registered by
+    name like the other parsers."""
+    take = raw.strip()
+    if not take:
+        raise AgentContractError(f"{stance} perspective agent returned an empty take")
+    return Perspective(stance=stance, take=take)
 
 
 def perspective_agent(
@@ -247,7 +249,4 @@ def perspective_agent(
         system_prompt=_perspective_system_prompt(stance, language),
         model=model,
     )
-    take = raw.strip()
-    if not take:
-        raise AgentContractError(f"{stance} perspective agent returned an empty take")
-    return Perspective(stance=stance, take=take)
+    return parse_perspective(raw, stance)

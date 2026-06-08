@@ -1,31 +1,28 @@
-"""Brief orchestrator — deterministic control flow for the brief workflow.
+"""Brief orchestrator — the brief workflow, now run by the GENERIC engine (Phase 7).
 
-Like the digest's `orchestrator.build_digest`, this is plain, deterministic control
-flow implemented as a **LangGraph `StateGraph`** (the engine is borrowed; the
-composition is ours). `build_brief` is the workflow entry point, symmetric to
-`build_digest`: gathered SourceItems in, a `Brief` out.
+`build_brief` is unchanged from the caller's view (gathered SourceItems in, a `Brief`
+out), but its graph is no longer hand-written: it is the `BRIEF_DEF` WorkflowDef
+(workflows.py) compiled by `engine.build_graph`. The former hand-written
+filter→compose→END graph is gone; the node behaviour lives in handlers/composers
+registered BY NAME into the component registry, which the engine wires from data.
 
-Graph (a linear pipeline):
-    START → filter → compose → END
-      filter : keep the valuable items (<= keep_cap)            [filter_agent]
-      compose: per kept item, one summary + one take per stance [summarize/perspective]
-               then assemble the Brief
+Graph (compiled from BRIEF_DEF):
+    START → filter → compose → assemble → END
+      filter  : keep the valuable items (<= keep_cap)             [filter_agent]   (step)
+      compose : per kept item, one summary + one take per stance, [summarize/      (fan_out
+                assembled into a BriefItem                         perspective]      + nested fan_out)
+      assemble: wrap the BriefItems into the Brief contract                         (gather)
 
-The fan-out that makes this a multi-agent job lives in `compose`: each kept item
-gets one summary call plus N (default 3) perspective calls, each perspective a
-SEPARATE prompt with fresh, un-anchored context.
+The fan-out is executed as a DETERMINISTIC, order-preserving sequential map inside
+the `compose` node (engine_fanout) — byte-for-byte the call order of the old
+`_compose_node` (brief D4): per kept item, the summary first, then one perspective
+per stance in order. That fidelity is what keeps the existing brief tests green (the
+"generic engine == hand-written graph" no-regression proof).
 
-Bounds (brief §3 cost gate): the collection layer caps items per source (<=20);
-the filter caps kept items (<=8); each kept item makes 1 + len(stances) calls. With
-the defaults that is at most 1 (filter) + 8×(1 + 3) = 33 model calls. There is NO
-verifier and NO redo loop (the digest has those; the brief enforces faithfulness by
-prompt + non-rewritable provenance instead). A persistently malformed agent reply
-is retried a bounded number of times, then fails the run (no dirty data).
-
-State is JSON-native (dict-state), matching the digest orchestrator, so nodes
-convert to/from the SourceItem/Brief dataclasses at their boundaries and the agents
-(injected via `config["configurable"]`) keep speaking dataclasses. The brief runs
-with NO checkpointer and NO human-in-the-loop gate by default (brief §11).
+State is JSON-native (dict-state), matching the digest: handlers convert to/from the
+SourceItem/Brief dataclasses at their boundaries; the agents (injected via
+`config["configurable"]`) keep speaking dataclasses. No checkpointer / no
+human-in-the-loop gate (brief §11).
 """
 
 from __future__ import annotations
@@ -36,8 +33,8 @@ from dataclasses import asdict
 from datetime import date
 from typing import TypedDict
 
-from langgraph.graph import END, START, StateGraph
-
+import components
+import engine
 from agent import AgentContractError
 from brief_agent import (
     KEEP_CAP,
@@ -50,6 +47,7 @@ from brief_agent import (
     summarize_item_agent,
 )
 from sources import SourceItem
+from workflows import BRIEF_DEF
 
 log = logging.getLogger(__name__)
 
@@ -111,18 +109,25 @@ def _bounded(call: Callable[[], object], what: str):
     )
 
 
-# --- LangGraph state + nodes ------------------------------------------------
+# --- LangGraph state --------------------------------------------------------
 class _State(TypedDict):
     items: list[dict]      # serialized SourceItems (gathered)
     stances: list[str]
     keep_cap: int
     model: str
     date: str
-    kept: list[dict] | None    # serialized SourceItems kept by the filter
-    result: dict | None        # serialized Brief — the answer
+    kept: list[dict] | None        # serialized SourceItems kept by the filter
+    brief_items: list[dict] | None  # serialized BriefItems from the fan_out
+    result: dict | None             # serialized Brief — the answer
 
 
-def _filter_node(state: _State, config) -> dict:
+# --- node handlers (step behaviour: state/sub-state <-> agent <-> delta) -----
+# `filter` runs on the graph state; `summary`/`perspective` run on a per-element
+# SUB-STATE the fan_out builds (the current item under "item", the current stance
+# under "stance"), inheriting "model" from the parent state. All keep dict-state.
+
+
+def _filter_node(state, config) -> dict:
     filter_fn = config["configurable"]["filter_fn"]
     items = [_sourceitem_from_dict(d) for d in state["items"]]
     kept = _bounded(
@@ -134,49 +139,72 @@ def _filter_node(state: _State, config) -> dict:
     return {"kept": [asdict(k) for k in kept]}
 
 
-def _compose_node(state: _State, config) -> dict:
+def _summary_node(sub, config) -> dict:
     summarize_fn = config["configurable"]["summarize_fn"]
+    item = _sourceitem_from_dict(sub["item"])
+    label = item.title[:40]
+    summary = _bounded(lambda: summarize_fn(item, sub["model"]), f"summary[{label}]")
+    return {"summary": summary}
+
+
+def _perspective_node(sub, config) -> dict:
     perspective_fn = config["configurable"]["perspective_fn"]
-    kept = [_sourceitem_from_dict(d) for d in state["kept"] or []]
-    brief_items: list[BriefItem] = []
-    for item in kept:
-        label = item.title[:40]
-        summary = _bounded(
-            lambda item=item: summarize_fn(item, state["model"]), f"summary[{label}]"
-        )
-        perspectives: list[Perspective] = []
-        for stance in state["stances"]:
-            take = _bounded(
-                lambda item=item, stance=stance: perspective_fn(item, stance, state["model"]),
-                f"{stance} perspective[{label}]",
-            )
-            perspectives.append(take)
-        # title/link/source/domain straight from the source item — never the model.
-        brief_items.append(
-            BriefItem(
-                title=item.title,
-                link=item.link,
-                source=item.source,
-                domain=item.domain,
-                summary=summary,
-                perspectives=perspectives,
-            )
-        )
-    brief = Brief(date=state["date"], items=brief_items)
-    return {"result": _brief_to_dict(brief)}
+    item = _sourceitem_from_dict(sub["item"])
+    stance = sub["stance"]
+    label = item.title[:40]
+    take = _bounded(
+        lambda: perspective_fn(item, stance, sub["model"]),
+        f"{stance} perspective[{label}]",
+    )
+    return {"perspective": asdict(take)}  # Perspective -> dict (JSON-native state)
 
 
-def _build_app():
-    g = StateGraph(_State)
-    g.add_node("filter", _filter_node)
-    g.add_node("compose", _compose_node)
-    g.add_edge(START, "filter")
-    g.add_edge("filter", "compose")
-    g.add_edge("compose", END)
-    return g.compile()
+# --- composers (assembly: sub-state / state -> a contract value) ------------
+def _perspective_value(sub) -> dict:
+    # the per-stance fan_out's element value: the Perspective dict the step wrote.
+    return sub["perspective"]
 
 
-_APP = _build_app()
+def _brief_item(sub) -> dict:
+    # one kept item's BriefItem: provenance (title/link/source/domain) straight from
+    # the source item — never the model; summary + perspectives from the agents.
+    item = sub["item"]
+    return {
+        "title": item["title"],
+        "link": item["link"],
+        "source": item["source"],
+        "domain": item["domain"],
+        "summary": sub["summary"],
+        "perspectives": sub["perspectives"],
+    }
+
+
+def _assemble_brief(state) -> dict:
+    # gather: wrap the collected BriefItems into the Brief contract.
+    return {"date": state["date"], "items": state["brief_items"] or []}
+
+
+# --- register the glue by name + compile BRIEF_DEF via the generic engine ----
+_NODE_HANDLERS = {
+    "brief_filter": _filter_node,
+    "brief_summary": _summary_node,
+    "brief_perspective": _perspective_node,
+}
+_COMPOSERS = {
+    "perspective_value": _perspective_value,
+    "brief_item": _brief_item,
+    "assemble_brief": _assemble_brief,
+}
+for _name, _fn in _NODE_HANDLERS.items():
+    components.register(components.NODE_HANDLERS, _name, _fn)
+for _name, _fn in _COMPOSERS.items():
+    components.register(components.COMPOSERS, _name, _fn)
+
+# The brief graph, compiled from BRIEF_DEF by the generic engine (no predicates —
+# the brief has no conditional edges; the fan_out/gather use composers).
+_APP = engine.build_graph(
+    BRIEF_DEF, _State, node_handlers=_NODE_HANDLERS, predicates={}, composers=_COMPOSERS
+).compile()
 
 
 def _initial_state(
@@ -189,6 +217,7 @@ def _initial_state(
         "model": model,
         "date": date_str,
         "kept": None,
+        "brief_items": None,
         "result": None,
     }
 

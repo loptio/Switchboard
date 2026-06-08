@@ -51,9 +51,10 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import TypedDict
 
-from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
+import components
+import engine
 from agent import (
     AgentContractError,
     Critique,
@@ -64,6 +65,7 @@ from agent import (
     verify_agent,
 )
 from fetch import FeedItem
+from workflows import DIGEST_DEF
 
 log = logging.getLogger(__name__)
 
@@ -329,49 +331,38 @@ def _route_after_human_review(state: _State) -> str:
     return "summarize"  # human asked for a redo → fresh auto-loop with their feedback
 
 
-def _build_builder() -> StateGraph:
-    """The single shared graph definition. Compiled without a checkpointer for the
-    digest default (`_APP`), and with a checkpointer for interruptible runs."""
-    g = StateGraph(_State)
-    g.add_node("summarize", _summarize_node)
-    g.add_node("verify", _verify_node)
-    g.add_node("accept_last", _accept_last_node)
-    g.add_node("finalize_gate", _finalize_gate_node)
-    g.add_node("human_review", _human_review_node)
-    g.add_edge(START, "summarize")
-    g.add_conditional_edges(
-        "summarize",
-        _route_after_summarize,
-        {
-            "verify": "verify",
-            "summarize": "summarize",
-            "accept_last": "accept_last",
-            "give_up": END,
-        },
-    )
-    g.add_conditional_edges(
-        "verify",
-        _route_after_verify,
-        {"finalize_gate": "finalize_gate", "summarize": "summarize", "accept_last": "accept_last"},
-    )
-    g.add_edge("accept_last", "finalize_gate")
-    g.add_conditional_edges(
-        "finalize_gate",
-        _route_after_finalize_gate,
-        {"human_review": "human_review", "end": END},
-    )
-    g.add_conditional_edges(
-        "human_review",
-        _route_after_human_review,
-        {"end": END, "summarize": "summarize"},
-    )
-    return g
+# Digest graph glue (Phase 7, Unit 2): the node handlers + routing predicates,
+# registered BY NAME into the component registry so the GENERIC engine
+# (engine.build_graph) can wire the DIGEST_DEF topology (workflows.py) from data.
+# This replaces the former hand-written `_build_builder()`: same nodes, same
+# handlers, same conditional edges / bounded redo loop / review gate — so the
+# existing digest tests (test_orchestrator, test_human_in_the_loop) are the
+# "generic engine behaviour == hand-written graph" no-regression proof.
+_NODE_HANDLERS = {
+    "digest_summarize": _summarize_node,
+    "digest_verify": _verify_node,
+    "digest_accept_last": _accept_last_node,
+    "digest_finalize_gate": _finalize_gate_node,
+    "digest_human_review": _human_review_node,
+}
+_PREDICATES = {
+    "digest_route_after_summarize": _route_after_summarize,
+    "digest_route_after_verify": _route_after_verify,
+    "digest_route_after_finalize_gate": _route_after_finalize_gate,
+    "digest_route_after_human_review": _route_after_human_review,
+}
+for _name, _fn in _NODE_HANDLERS.items():
+    components.register(components.NODE_HANDLERS, _name, _fn)
+for _name, _fn in _PREDICATES.items():
+    components.register(components.PREDICATES, _name, _fn)
 
-
-# One shared builder (the system's graph), compiled two ways: without a
-# checkpointer for the straight-through digest default, and — per interruptible
-# run — WITH an injected checkpointer for human-in-the-loop suspend/resume.
-_BUILDER = _build_builder()
+# One shared builder (the system's graph), now COMPILED FROM the digest WorkflowDef
+# by the generic engine, compiled two ways: without a checkpointer for the
+# straight-through digest default (`_APP`), and — per interruptible run — WITH an
+# injected checkpointer for human-in-the-loop suspend/resume.
+_BUILDER = engine.build_graph(
+    DIGEST_DEF, _State, node_handlers=_NODE_HANDLERS, predicates=_PREDICATES
+)
 _APP = _BUILDER.compile()  # no checkpointer: the digest default runs straight through
 
 

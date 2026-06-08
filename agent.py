@@ -25,9 +25,26 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from agentdefs import AGENT_DEFS, ISSUE_KINDS, render
 from config import DEFAULT_LANGUAGE
 from fetch import FeedItem
 from llm import complete
+
+__all__ = [  # names other modules / tests import from here (some re-exported)
+    "ISSUE_KINDS",
+    "VERIFIER_SYSTEM_PROMPT",
+    "AgentContractError",
+    "Critique",
+    "CritiqueIssue",
+    "Digest",
+    "DigestItem",
+    "parse_critique",
+    "parse_digest",
+    "summarize",
+    "summarize_agent",
+    "summary_system_prompt",
+    "verify_agent",
+]
 
 
 @dataclass(frozen=True)
@@ -51,20 +68,12 @@ class AgentContractError(Exception):
     """
 
 
-# Canonical critique issue kinds (the verifier prompt asks for these). NOT
-# enforced as an enum: an unknown kind is kept verbatim — `detail` carries the
-# actionable content and `index` points at the offending digest item. Note that
-# `fabricated_link`/`title_mismatch` are structurally prevented by parse_digest
-# (title/link come from the source), so in practice the verifier's job is
-# summary faithfulness; they remain here as a vocabulary + unit-tested backstop.
-ISSUE_KINDS = (
-    "hallucination",       # summary states something not in the source
-    "summary_inaccurate",  # summary distorts / misrepresents the source
-    "missing_item",        # a source item that should be covered is absent
-    "fabricated_link",     # link not present in the source
-    "title_mismatch",      # title not matching the source
-    "format",              # structural / format problem
-)
+# `ISSUE_KINDS` (the verifier's prompt vocabulary) now lives in `agentdefs` as data
+# and is imported above (re-exported here for back-compat). It is NOT enforced as an
+# enum — an unknown kind is kept verbatim by `parse_critique`. Note that
+# `fabricated_link`/`title_mismatch` are structurally prevented by `parse_digest`
+# (title/link come from the source), so in practice the verifier's job is summary
+# faithfulness; the kinds remain a vocabulary + unit-tested backstop.
 
 
 @dataclass(frozen=True)
@@ -83,35 +92,16 @@ class Critique:
 def summary_system_prompt(language: str = DEFAULT_LANGUAGE) -> str:
     """Digest summarizer system prompt, parameterized by output `language`.
 
-    The one_line_summary is written in `language` even when the source item is in
-    another language; title/link are still taken verbatim from the source (the
-    anti-fabrication rule), so provenance is never translated."""
-    return (
-        "You are a precise news-digest assistant. You receive a JSON list of RSS "
-        "feed items (title, link, summary). For each item, write one concise "
-        f"one-sentence summary in {language} — write it in {language} even if the "
-        "source item is in another language. "
-        "Respond with ONLY a JSON array; each element is an object "
-        '{"title": str, "link": str, "one_line_summary": str}. '
-        "Preserve each given title and link verbatim. Keep the input order. "
-        "No prose, no markdown, no code fences."
-    )
+    The prompt TEXT is data (`agentdefs.AGENT_DEFS["summarize"].system_prompt`);
+    this renders the `{language}` marker. The one_line_summary is written in
+    `language` even when the source item is in another language; title/link are
+    still taken verbatim from the source (anti-fabrication), so provenance is never
+    translated."""
+    return render(AGENT_DEFS["summarize"].system_prompt, language=language)
 
-VERIFIER_SYSTEM_PROMPT = (
-    "You are a meticulous fact-checking reviewer for a news digest. You receive "
-    "the SOURCE feed items and a CANDIDATE digest (one one-sentence summary per "
-    "item, same order). For EACH summary, check it ONLY against its source item "
-    "(title + summary text) — never your own world knowledge. Flag a summary that "
-    "states something the source does not support (hallucination), distorts or "
-    "misrepresents the source (summary_inaccurate), or drops the source's main "
-    "point (missing_item). "
-    'Respond with ONLY a JSON object: {"passed": bool, "issues": [{"index": int, '
-    '"kind": str, "detail": str}]}. "index" is the 1-based item number; "kind" is '
-    'one of ' + ", ".join(ISSUE_KINDS) + '; "detail" is a specific, actionable '
-    'reason. If every summary is faithful, return {"passed": true, "issues": []}; '
-    "otherwise set passed=false and list each problem. No prose, no markdown, no "
-    "code fences."
-)
+
+# The verifier's system prompt is a constant — sourced as data from agentdefs.
+VERIFIER_SYSTEM_PROMPT = AGENT_DEFS["verify"].system_prompt
 
 
 def _build_prompt(items: list[FeedItem], n: int) -> str:
