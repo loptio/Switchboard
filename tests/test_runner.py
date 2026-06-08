@@ -52,7 +52,8 @@ def _raise(msg):
 def fake_pipeline(monkeypatch):
     monkeypatch.setattr(runner, "fetch_feed", lambda url: FAKE_ITEMS)
     # The runner now calls the orchestrator (summarize+verify); same I/O contract.
-    monkeypatch.setattr(runner, "build_digest", lambda items, n, model: FAKE_DIGEST)
+    # **kw absorbs the language-bound summarize_fn the runner injects.
+    monkeypatch.setattr(runner, "build_digest", lambda items, n, model, **kw: FAKE_DIGEST)
 
 
 def test_run_once_success(database, fake_pipeline, tmp_path, monkeypatch):
@@ -175,7 +176,7 @@ FAKE_BRIEF = Brief(
 @pytest.fixture
 def fake_brief_pipeline(monkeypatch):
     monkeypatch.setattr(runner, "gather_sources", lambda: FAKE_SOURCE_ITEMS)
-    monkeypatch.setattr(runner, "build_brief", lambda items, *, model, day: FAKE_BRIEF)
+    monkeypatch.setattr(runner, "build_brief", lambda items, *, model, day, **kw: FAKE_BRIEF)
 
 
 def test_run_once_brief_success(database, fake_brief_pipeline, tmp_path, monkeypatch):
@@ -216,11 +217,11 @@ def test_workflow_dispatch_picks_the_right_pipeline(database, tmp_path, monkeypa
     called = []
     monkeypatch.setattr(runner, "fetch_feed", lambda url: FAKE_ITEMS)
     monkeypatch.setattr(
-        runner, "build_digest", lambda items, n, model: called.append("digest") or FAKE_DIGEST
+        runner, "build_digest", lambda items, n, model, **kw: called.append("digest") or FAKE_DIGEST
     )
     monkeypatch.setattr(runner, "gather_sources", lambda: FAKE_SOURCE_ITEMS)
     monkeypatch.setattr(
-        runner, "build_brief", lambda items, *, model, day: called.append("brief") or FAKE_BRIEF
+        runner, "build_brief", lambda items, *, model, day, **kw: called.append("brief") or FAKE_BRIEF
     )
     monkeypatch.setattr(runner, "send_digest", lambda d: None)
     monkeypatch.setattr(runner, "send_brief", lambda b: None)

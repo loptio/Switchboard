@@ -11,7 +11,6 @@ import json
 import pytest
 
 from agent import (
-    SYSTEM_PROMPT,
     VERIFIER_SYSTEM_PROMPT,
     AgentContractError,
     Critique,
@@ -23,6 +22,7 @@ from agent import (
     summarize_agent,
     verify_agent,
 )
+from config import DEFAULT_LANGUAGE
 from fetch import FeedItem
 
 SRC = [
@@ -216,8 +216,14 @@ def test_summarize_agent_happy_path_uses_source_title_link():
         ("Title A", "https://e/a", "sum a"),
         ("Title B", "https://e/b", "sum b"),
     ]
-    assert llm.calls[0]["system_prompt"] == SYSTEM_PROMPT
+    assert DEFAULT_LANGUAGE in llm.calls[0]["system_prompt"]  # output-language instruction
     assert "Title A" in llm.calls[0]["prompt"]  # source items embedded in prompt
+
+
+def test_summarize_agent_uses_output_language():
+    llm = FakeLLM(_digest_reply([{"one_line_summary": "s"}]))
+    summarize_agent(SRC[:1], 1, "m", language="繁體中文", llm=llm)
+    assert "繁體中文" in llm.calls[0]["system_prompt"]
 
 
 def test_summarize_agent_empty_items_no_llm_call():

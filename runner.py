@@ -30,11 +30,12 @@ import logging
 from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import date, datetime
+from functools import partial
 
 import checkpoint
 import db
-from agent import Digest
-from brief_agent import Brief
+from agent import Digest, summarize_agent
+from brief_agent import Brief, perspective_agent, summarize_item_agent
 from brief_orchestrator import build_brief
 from config import Config, load_config
 from fetch import fetch_feed
@@ -124,7 +125,12 @@ def _finalize_brief(run: db.Run, brief: Brief, cfg: Config, now: datetime | None
 def _run_digest_pipeline(run: db.Run, cfg: Config, now: datetime | None) -> db.Run:
     try:
         items = fetch_feed(cfg.feed_url)
-        digest = build_digest(items, cfg.count, cfg.model)
+        # Bind the configured output language into the summarizer (one_line_summary
+        # is written in that language; title/link stay verbatim from the source).
+        digest = build_digest(
+            items, cfg.count, cfg.model,
+            summarize_fn=partial(summarize_agent, language=cfg.output_language),
+        )
     except Exception as exc:
         log.exception("run %s failed", run.id)
         return db.mark_failed(run.id, str(exc), now=now)
@@ -135,7 +141,13 @@ def _run_brief_pipeline(run: db.Run, cfg: Config, now: datetime | None) -> db.Ru
     try:
         day = now.date() if now is not None else date.today()
         items = gather_sources()
-        brief = build_brief(items, model=cfg.model, day=day)
+        # Summary + perspective takes are written in the configured language; the
+        # filter is language-agnostic and provenance is never translated.
+        brief = build_brief(
+            items, model=cfg.model, day=day,
+            summarize_fn=partial(summarize_item_agent, language=cfg.output_language),
+            perspective_fn=partial(perspective_agent, language=cfg.output_language),
+        )
     except Exception as exc:
         log.exception("run %s failed", run.id)
         return db.mark_failed(run.id, str(exc), now=now)
@@ -207,10 +219,14 @@ def _checkpointer_cm(checkpointer):
     return checkpoint.make_pg_checkpointer()
 
 
-def _agent_kwargs(summarize_fn, verify_fn) -> dict:
-    kw = {}
-    if summarize_fn is not None:
-        kw["summarize_fn"] = summarize_fn
+def _agent_kwargs(cfg: Config, summarize_fn, verify_fn) -> dict:
+    # Bind the configured output language into the real digest summarizer unless a
+    # caller injected a fake (tests). verify_fn is language-agnostic (a judgment).
+    kw = {
+        "summarize_fn": summarize_fn
+        if summarize_fn is not None
+        else partial(summarize_agent, language=cfg.output_language)
+    }
     if verify_fn is not None:
         kw["verify_fn"] = verify_fn
     return kw
@@ -256,7 +272,7 @@ def run_review_once(
                 cfg.model,
                 thread_id=run.id,
                 checkpointer=cp,
-                **_agent_kwargs(summarize_fn, verify_fn),
+                **_agent_kwargs(cfg, summarize_fn, verify_fn),
             )
             return _apply_outcome(run, outcome, cfg, now)
     except Exception as exc:
@@ -296,7 +312,7 @@ def resume_run(
                 thread_id=run_id,
                 checkpointer=cp,
                 decision=decision,
-                **_agent_kwargs(summarize_fn, verify_fn),
+                **_agent_kwargs(cfg, summarize_fn, verify_fn),
             )
             return _apply_outcome(run, outcome, cfg, now)
     except Exception as exc:

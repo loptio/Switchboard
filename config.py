@@ -22,6 +22,10 @@ DEFAULT_FEED_URL = "https://hnrss.org/frontpage"
 DEFAULT_COUNT = 10
 DEFAULT_OUTPUT_DIR = "output"
 DEFAULT_MODEL = "claude-opus-4-8"
+# Language for model-GENERATED text (digest one_line_summary, brief summary +
+# perspective takes). Provenance (title/link/source/domain) is never translated.
+# Default Simplified Chinese; switch to e.g. "繁體中文" / "English" via OUTPUT_LANGUAGE.
+DEFAULT_LANGUAGE = "简体中文"
 
 
 @dataclass(frozen=True)
@@ -30,6 +34,7 @@ class Config:
     count: int
     output_dir: Path
     model: str
+    output_language: str = DEFAULT_LANGUAGE
 
 
 def _positive_int(name: str, default: int) -> int:
@@ -52,4 +57,5 @@ def load_config() -> Config:
         count=_positive_int("DIGEST_COUNT", DEFAULT_COUNT),
         output_dir=Path(os.getenv("OUTPUT_DIR", DEFAULT_OUTPUT_DIR)),
         model=os.getenv("MODEL", DEFAULT_MODEL),
+        output_language=os.getenv("OUTPUT_LANGUAGE", DEFAULT_LANGUAGE),
     )

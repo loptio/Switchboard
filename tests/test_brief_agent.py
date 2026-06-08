@@ -15,6 +15,7 @@ from brief_agent import (
     perspective_agent,
     summarize_item_agent,
 )
+from config import DEFAULT_LANGUAGE
 from sources import SourceItem
 
 
@@ -130,3 +131,31 @@ def test_perspective_agent_sets_stance_and_take():
 def test_perspective_agent_empty_raises():
     with pytest.raises(AgentContractError):
         perspective_agent(_item(), "技术", "m", llm=FakeLLM(""))
+
+
+# --- output language (Phase 6 follow-up) -----------------------------------
+def test_summarize_item_agent_writes_in_output_language():
+    llm = FakeLLM("摘要")
+    summarize_item_agent(_item(), "m", llm=llm)  # default
+    assert DEFAULT_LANGUAGE in llm.calls[0]["system_prompt"]
+
+    llm2 = FakeLLM("摘要")
+    summarize_item_agent(_item(), "m", language="繁體中文", llm=llm2)
+    assert "繁體中文" in llm2.calls[0]["system_prompt"]
+
+
+def test_perspective_agent_writes_in_output_language():
+    llm = FakeLLM("观点")
+    perspective_agent(_item(), "商业", "m", llm=llm)  # default
+    assert DEFAULT_LANGUAGE in llm.calls[0]["system_prompt"]
+
+    llm2 = FakeLLM("觀點")
+    perspective_agent(_item(), "商业", "m", language="繁體中文", llm=llm2)
+    assert "繁體中文" in llm2.calls[0]["system_prompt"]
+
+
+def test_filter_agent_is_language_agnostic():
+    # the filter is an internal judgment — no output-language instruction in its prompt
+    llm = FakeLLM('{"keep": [1]}')
+    filter_agent([_item()], "m", llm=llm)
+    assert DEFAULT_LANGUAGE not in llm.calls[0]["system_prompt"]

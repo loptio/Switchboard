@@ -36,6 +36,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from agent import AgentContractError  # shared contract-violation type
+from config import DEFAULT_LANGUAGE
 from llm import complete
 from sources import SourceItem
 
@@ -170,12 +171,14 @@ def filter_agent(
 
 
 # --- summary agent ----------------------------------------------------------
-SUMMARY_SYSTEM_PROMPT = (
-    "You summarize a single news item in one or two concise sentences, in the same "
-    "language as the item. Base the summary ONLY on the provided title and text — do "
-    "not add facts, numbers, or claims that are not present (no fabrication). Respond "
-    "with ONLY the summary sentence(s): no preamble, no JSON, no markdown."
-)
+def _summary_system_prompt(language: str) -> str:
+    return (
+        "You summarize a single news item in one or two concise sentences, written "
+        f"in {language} — write the summary in {language} even if the source is in "
+        "another language. Base the summary ONLY on the provided title and text — do "
+        "not add facts, numbers, or claims that are not present (no fabrication). "
+        "Respond with ONLY the summary sentence(s): no preamble, no JSON, no markdown."
+    )
 
 
 def _build_summary_prompt(item: SourceItem) -> str:
@@ -187,10 +190,18 @@ def _build_summary_prompt(item: SourceItem) -> str:
 
 
 def summarize_item_agent(
-    item: SourceItem, model: str, *, llm: Callable[..., str] = complete
+    item: SourceItem,
+    model: str,
+    *,
+    language: str = DEFAULT_LANGUAGE,
+    llm: Callable[..., str] = complete,
 ) -> str:
-    """Summary agent: one item -> a concise, grounded summary string."""
-    raw = llm(_build_summary_prompt(item), system_prompt=SUMMARY_SYSTEM_PROMPT, model=model)
+    """Summary agent: one item -> a concise, grounded summary string in `language`."""
+    raw = llm(
+        _build_summary_prompt(item),
+        system_prompt=_summary_system_prompt(language),
+        model=model,
+    )
     summary = raw.strip()
     if not summary:
         raise AgentContractError("summary agent returned an empty summary")
@@ -198,14 +209,14 @@ def summarize_item_agent(
 
 
 # --- perspective agent (one call per stance) --------------------------------
-def _perspective_system_prompt(stance: str) -> str:
+def _perspective_system_prompt(stance: str, language: str) -> str:
     return (
         "You are a sharp analyst. Analyze the given news item strictly through the "
         f"lens of its {stance} implications. Give ONE specific, insightful take of two "
-        "to three sentences from this perspective. Ground every claim in THIS item's "
-        "content — do not fabricate facts beyond it (you may reason about implications, "
-        "but tie them to the item). Respond with ONLY your take: no preamble, no JSON, "
-        "no markdown."
+        f"to three sentences, written in {language} (even if the source is in another "
+        "language). Ground every claim in THIS item's content — do not fabricate facts "
+        "beyond it (you may reason about implications, but tie them to the item). "
+        "Respond with ONLY your take: no preamble, no JSON, no markdown."
     )
 
 
@@ -218,9 +229,14 @@ def _build_perspective_prompt(item: SourceItem) -> str:
 
 
 def perspective_agent(
-    item: SourceItem, stance: str, model: str, *, llm: Callable[..., str] = complete
+    item: SourceItem,
+    stance: str,
+    model: str,
+    *,
+    language: str = DEFAULT_LANGUAGE,
+    llm: Callable[..., str] = complete,
 ) -> Perspective:
-    """Perspective agent: one item + one stance -> a Perspective.
+    """Perspective agent: one item + one stance -> a Perspective (take in `language`).
 
     Each stance is a separate call with its own system prompt (fresh, un-anchored
     context). `stance` is set by us on the returned Perspective — the model writes
@@ -228,7 +244,7 @@ def perspective_agent(
     """
     raw = llm(
         _build_perspective_prompt(item),
-        system_prompt=_perspective_system_prompt(stance),
+        system_prompt=_perspective_system_prompt(stance, language),
         model=model,
     )
     take = raw.strip()

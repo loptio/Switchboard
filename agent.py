@@ -25,6 +25,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from config import DEFAULT_LANGUAGE
 from fetch import FeedItem
 from llm import complete
 
@@ -79,15 +80,22 @@ class Critique:
     issues: list[CritiqueIssue]
 
 
-SYSTEM_PROMPT = (
-    "You are a precise news-digest assistant. You receive a JSON list of RSS "
-    "feed items (title, link, summary). For each item, write one concise "
-    "one-sentence summary in the same language as the item. "
-    "Respond with ONLY a JSON array; each element is an object "
-    '{"title": str, "link": str, "one_line_summary": str}. '
-    "Preserve each given title and link verbatim. Keep the input order. "
-    "No prose, no markdown, no code fences."
-)
+def summary_system_prompt(language: str = DEFAULT_LANGUAGE) -> str:
+    """Digest summarizer system prompt, parameterized by output `language`.
+
+    The one_line_summary is written in `language` even when the source item is in
+    another language; title/link are still taken verbatim from the source (the
+    anti-fabrication rule), so provenance is never translated."""
+    return (
+        "You are a precise news-digest assistant. You receive a JSON list of RSS "
+        "feed items (title, link, summary). For each item, write one concise "
+        f"one-sentence summary in {language} — write it in {language} even if the "
+        "source item is in another language. "
+        "Respond with ONLY a JSON array; each element is an object "
+        '{"title": str, "link": str, "one_line_summary": str}. '
+        "Preserve each given title and link verbatim. Keep the input order. "
+        "No prose, no markdown, no code fences."
+    )
 
 VERIFIER_SYSTEM_PROMPT = (
     "You are a meticulous fact-checking reviewer for a news digest. You receive "
@@ -224,14 +232,16 @@ def parse_critique(raw: str) -> Critique:
     return Critique(passed=False, issues=issues)
 
 
-def summarize(items: list[FeedItem], n: int, model: str) -> Digest:
+def summarize(
+    items: list[FeedItem], n: int, model: str, *, language: str = DEFAULT_LANGUAGE
+) -> Digest:
     """Summarize the top `n` items into a structured Digest via the Agent SDK."""
     if not items:
         return Digest(items=[])
 
     prompt = _build_prompt(items, n)
     # The model call (and its auth-remediation guidance) lives in the llm seam.
-    raw = complete(prompt, system_prompt=SYSTEM_PROMPT, model=model)
+    raw = complete(prompt, system_prompt=summary_system_prompt(language), model=model)
 
     try:
         data = _parse_json_array(raw)
@@ -272,6 +282,7 @@ def summarize_agent(
     model: str,
     *,
     feedback: Critique | None = None,
+    language: str = DEFAULT_LANGUAGE,
     llm: Callable[..., str] = complete,
 ) -> Digest:
     """Summarizer agent: items (+ optional reviewer feedback) -> validated Digest.
@@ -288,7 +299,7 @@ def summarize_agent(
     prompt = _build_prompt(items, n)
     if feedback is not None and feedback.issues:
         prompt = f"{prompt}\n\n{_format_feedback(feedback)}"
-    raw = llm(prompt, system_prompt=SYSTEM_PROMPT, model=model)
+    raw = llm(prompt, system_prompt=summary_system_prompt(language), model=model)
     return parse_digest(raw, chosen)
 
 
