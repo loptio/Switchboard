@@ -11,7 +11,7 @@ import styles from "./RunDetail.module.css";
 /** Coding diff-review body (Phase 10a): the agent's summary, the changed files, the
  *  status (a bounded `stopped_limit` stop is flagged prominently — hardening #3), and
  *  the unified diff. The human approves the diff or sends it back with feedback. */
-function CodingDiff({ coding }: { coding: CodingReviewPayload }) {
+export function CodingDiff({ coding }: { coding: CodingReviewPayload }) {
   const stopped = coding.status !== "completed";
   const tampered = coding.git_tampered ?? [];
   const commands = coding.commands ?? [];

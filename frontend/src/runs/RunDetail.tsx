@@ -1,11 +1,12 @@
 import { Link, useParams } from "react-router-dom";
 
+import type { CodingReviewPayload } from "../api/types";
 import { Card } from "../components/Card";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Markdown } from "../components/Markdown";
 import { Spinner } from "../components/Spinner";
 import { formatTime } from "../lib/format";
-import { ReviewPanel } from "./ReviewPanel";
+import { CodingDiff, ReviewPanel } from "./ReviewPanel";
 import { RunStatusBadge } from "./RunStatusBadge";
 import { useRun } from "./useRun";
 import styles from "./RunDetail.module.css";
@@ -36,6 +37,10 @@ export function RunDetail() {
   if (error) return <ErrorBanner message={error} />;
   if (!run) return null;
 
+  // A coding run's deliverable carries its diff + the SHELL COMMANDS it ran (Phase 10b-2)
+  // and a .git-tamper flag in `data` — render the same audit view as the review gate so
+  // the commands (whose side effects are not in the diff) are visible on a finished run.
+  const coding = outputs.find((o) => o.type === "coding");
   const digest = outputs.find((o) => o.type === "digest") ?? outputs[0];
   const inProgress = run.status === "pending" || run.status === "running";
 
@@ -80,6 +85,10 @@ export function RunDetail() {
             <div className={styles.pending}>
               <Spinner label={`Run is ${run.status} — this view updates automatically…`} />
             </div>
+          ) : coding?.data ? (
+            <Card>
+              <CodingDiff coding={coding.data as unknown as CodingReviewPayload} />
+            </Card>
           ) : digest ? (
             <Card>
               <Markdown>{digest.content}</Markdown>

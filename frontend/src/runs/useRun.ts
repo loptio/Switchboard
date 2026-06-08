@@ -40,7 +40,9 @@ export function useRun(id: string): UseRun {
       setRun(r);
       setError(null);
       setNotFound(false);
-      if (r.status === "success") {
+      if (r.status === "success" || r.status === "failed") {
+        // Failed runs can still have a persisted output worth showing — e.g. a coding
+        // run refused for .git tampering, or a bounded stop with a partial diff/commands.
         const outs = await getRunOutput(id);
         if (mounted.current) setOutputs(outs);
       } else if (r.status === "awaiting_input") {

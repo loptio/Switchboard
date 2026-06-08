@@ -70,4 +70,48 @@ describe("RunDetail", () => {
     renderDetail("ghost");
     expect(await screen.findByText(/run not found/i)).toBeInTheDocument();
   });
+
+  // Phase 10b-2: a finished coding run shows the shell commands it ran (side effects
+  // not in the diff) and a prominent banner if it touched .git.
+  const CODING_OUTPUT: Output = {
+    id: "o2",
+    run_id: "r1",
+    type: "coding",
+    content: "# Coding run",
+    data: {
+      summary: "added hello()",
+      diff: "--- a/hello.py\n+++ b/hello.py\n+def hello():\n",
+      changed_files: ["hello.py"],
+      status: "completed",
+      commands: ["python -m pytest -q", "ruff check ."],
+      git_tampered: [],
+    },
+    created_at: "2026-06-08T00:00:05Z",
+  };
+
+  it("renders a coding run's commands alongside the diff", async () => {
+    vi.mocked(getRun).mockResolvedValue({ ...SUCCESS_RUN, workflow: "coding" });
+    vi.mocked(getRunOutput).mockResolvedValue([CODING_OUTPUT]);
+
+    renderDetail();
+
+    const commands = await screen.findByLabelText("commands");
+    expect(commands).toHaveTextContent("python -m pytest -q");
+    expect(commands).toHaveTextContent("ruff check .");
+    expect(screen.getByLabelText("diff")).toHaveTextContent("+def hello():");
+  });
+
+  it("flags a .git tampering attempt on a finished coding run", async () => {
+    vi.mocked(getRun).mockResolvedValue({
+      ...SUCCESS_RUN, workflow: "coding", status: "failed", error: ".git tampered (reverted)",
+    });
+    vi.mocked(getRunOutput).mockResolvedValue([
+      { ...CODING_OUTPUT, data: { ...CODING_OUTPUT.data, git_tampered: ["hooks/pre-commit"] } },
+    ]);
+
+    renderDetail();
+
+    expect(await screen.findByText(/git internals/i)).toBeInTheDocument();
+    expect(screen.getByText(/hooks\/pre-commit/)).toBeInTheDocument();
+  });
 });
