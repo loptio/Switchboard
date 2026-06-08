@@ -40,7 +40,9 @@ ANTHROPIC_API_KEY (that bills the paid API) — same rule as llm.py.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -96,6 +98,57 @@ _AUTH_HINT = (
     "with your subscription: run `claude`, then /login. Do NOT set ANTHROPIC_API_KEY "
     "(that bills the paid API)."
 )
+
+# ENV SCRUBBING (Phase 10b-2 escape-test fix). The sandbox governs FILES + NETWORK, not
+# the environment — and the SDK spawns the CLI with `{**os.environ, **options.env}`
+# (subprocess_cli.py), so a sandboxed bash would otherwise inherit EVERY worker secret
+# (SECRET_KEY, SMTP_PASSWORD, LLM API keys). Those would exfiltrate via the model channel
+# (a command's output is fed back as a tool_result) or the diff/output — which network
+# deny cannot stop. So the agent's CLI sees only a minimal ALLOWLIST. Subscription auth
+# lives in ~/.claude, reached via HOME (kept), not env — so scrubbing must not break it.
+_ENV_ALLOWLIST = ("PATH", "HOME", "LANG")
+
+
+def _clean_env() -> dict[str, str]:
+    """The minimal allowlist environment for the sandboxed CLI + shell: PATH/HOME/LANG,
+    any LC_* (locale), and the per-command bash timeouts — nothing else. No worker secret
+    can ride along. Read from the current process env at call time."""
+    out: dict[str, str] = {k: os.environ[k] for k in _ENV_ALLOWLIST if k in os.environ}
+    out.update({k: v for k, v in os.environ.items() if k.startswith("LC_")})
+    out["BASH_DEFAULT_TIMEOUT_MS"] = str(DEFAULT_BASH_TIMEOUT_MS)
+    out["BASH_MAX_TIMEOUT_MS"] = str(MAX_BASH_TIMEOUT_MS)
+    return out
+
+
+@contextlib.contextmanager
+def _minimal_env():
+    """Run the wrapped block with `os.environ` reduced to the allowlist, then restore it.
+
+    LOAD-BEARING: the SDK inherits `os.environ` wholesale into the CLI subprocess, and
+    `options.env` is only an OVERLAY (it cannot REMOVE inherited keys). So we scrub the
+    process env for the duration of the (blocking, single-threaded) SDK call so the
+    spawned CLI — and the bash it sandboxes — never see the worker's secrets. Restored
+    in `finally` even if the SDK errors.
+
+    CONCURRENCY CONSTRAINT (known, not a leak — a correctness limit): this mutates the
+    PROCESS-GLOBAL os.environ for the whole agent-run window. Safe TODAY because the only
+    callers run env-isolated: `run-once` is its own process, and the scheduler worker
+    executes runs SEQUENTIALLY (BlockingScheduler, max_instances=1, a one-at-a-time drain
+    loop — scheduler.py), so no other run reads the scrubbed env during the window. It
+    becomes a hazard ONLY IF the worker is made CONCURRENT (thread pool / max_instances>1)
+    AND a coding run overlaps an env-reading run (e.g. a digest emailing via
+    SMTP_PASSWORD): that run would see the scrubbed env and fail. When coding runs move
+    into a shared concurrent worker, fix it then — run coding solo in the worker, or make
+    the clean env SUBPROCESS-level (don't touch the shared os.environ)."""
+    saved = dict(os.environ)
+    clean = _clean_env()  # compute from the FULL env before clearing (keeps PATH/HOME)
+    os.environ.clear()
+    os.environ.update(clean)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
 
 
 @dataclass(frozen=True)
@@ -281,11 +334,10 @@ def _build_options(
             "excludedCommands": [],  # nothing runs outside it (not even git/docker)
             # no "allowedDomains" -> network DENIED by default (decision E)
         },
-        # Phase 10b-2 — per-command timeout the bundled CLI enforces (decision D):
-        env={
-            "BASH_DEFAULT_TIMEOUT_MS": str(DEFAULT_BASH_TIMEOUT_MS),
-            "BASH_MAX_TIMEOUT_MS": str(MAX_BASH_TIMEOUT_MS),
-        },
+        # Phase 10b-2 — a minimal ALLOWLIST env (no worker secrets); includes the
+        # per-command bash timeouts the bundled CLI enforces (decision D). Belt to the
+        # `_minimal_env()` suspenders in run_coding_agent (the SDK merges over os.environ).
+        env=_clean_env(),
     )
 
 
@@ -352,7 +404,10 @@ def run_coding_agent(
         max_tool_calls=max_tool_calls, max_budget_usd=max_budget_usd, counter=counter,
     )
     try:
-        messages = anyio.run(_arun, prompt, options)
+        # Scrub the worker's secrets out of the process env for the duration of the SDK
+        # call, so the sandboxed bash never inherits them (the sandbox does not cover env).
+        with _minimal_env():
+            messages = anyio.run(_arun, prompt, options)
     except Exception as exc:
         log.exception("coding agent run failed")
         return CodingResult(

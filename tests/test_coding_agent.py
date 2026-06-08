@@ -12,6 +12,8 @@ Constructing SDK message dataclasses is offline (no network); only `query()` wou
 the model, and it is never called here.
 """
 
+import os
+
 import anyio
 from claude_agent_sdk import (
     AssistantMessage,
@@ -207,3 +209,36 @@ def test_build_options_makes_bash_available_and_bounds_command_timeout(tmp_path)
     assert opts.disallowed_tools == ["BashOutput", "KillShell"]
     assert opts.env["BASH_DEFAULT_TIMEOUT_MS"] == str(C.DEFAULT_BASH_TIMEOUT_MS)
     assert opts.env["BASH_MAX_TIMEOUT_MS"] == str(C.MAX_BASH_TIMEOUT_MS)
+
+
+# --- Phase 10b-2 escape fix: the sandboxed shell must NOT inherit worker secrets ----
+
+def test_clean_env_drops_secrets_keeps_allowlist(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "sk-leak")
+    monkeypatch.setenv("SMTP_PASSWORD", "pw-leak")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "key-leak")
+    monkeypatch.setenv("OPENAI_API_KEY", "key-leak2")
+    monkeypatch.setenv("LC_ALL", "en_US.UTF-8")
+    env = C._clean_env()
+    for secret in ("SECRET_KEY", "SMTP_PASSWORD", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        assert secret not in env  # no worker secret rides into the sandbox
+    assert "PATH" in env and "HOME" in env  # the CLI/shell essentials survive
+    assert env["LC_ALL"] == "en_US.UTF-8"  # LC_* (locale) passes through
+    assert env["BASH_MAX_TIMEOUT_MS"] == str(C.MAX_BASH_TIMEOUT_MS)
+
+
+def test_build_options_env_is_the_allowlist_not_the_worker_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("SMTP_PASSWORD", "pw-leak")
+    opts = _opts(tmp_path)
+    assert "SMTP_PASSWORD" not in opts.env
+    assert "PATH" in opts.env and "HOME" in opts.env
+
+
+def test_minimal_env_scrubs_during_and_restores_after(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "sk-leak")
+    assert os.environ.get("SECRET_KEY") == "sk-leak"
+    with C._minimal_env():
+        # inside the SDK-call window the process env is scrubbed to the allowlist
+        assert "SECRET_KEY" not in os.environ
+        assert "PATH" in os.environ
+    assert os.environ.get("SECRET_KEY") == "sk-leak"  # fully restored afterwards
