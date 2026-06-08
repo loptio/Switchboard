@@ -235,14 +235,22 @@ def git_restore(root: str | os.PathLike) -> None:
 
 
 # --- .git integrity guard (Phase 10b-2) -------------------------------------
-# A coding agent with a real shell can write into the repo's `.git` — and `.git/hooks`
+# A coding agent with a real shell could write into the repo's `.git` — and `.git/hooks`
 # scripts (or `.git/config` core.hooksPath / aliases / fsmonitor / sshCommand) run code
 # OUTSIDE the sandbox on the user's next git operation. `git diff` never shows `.git/`,
 # and `git_restore` (checkout + clean) never touches it — so审 diff / git 还原 cannot
-# catch this. The sandbox locks commands to the workspace, but `.git` is INSIDE the
-# workspace, so the OS sandbox does not block it either. The family therefore snapshots
-# the security-relevant `.git` contents around a run, and on any change NEUTRALISES it
-# (restores the prior bytes / removes the injected file) and REFUSES to finalize.
+# catch this. The family therefore snapshots the security-relevant `.git` contents around
+# a run, and on any change NEUTRALISES it (restores prior bytes / removes the injected
+# file) and REFUSES to finalize.
+#
+# RELATIONSHIP TO THE SANDBOX (real-machine finding, 10b-2-1 escape test): the CLI's
+# Seatbelt profile ALREADY denies writes under `.git/` — a command's `echo > .git/config`
+# or `.git/hooks/pre-commit` fails with "operation not permitted". So the SANDBOX is the
+# PRIMARY `.git` defense; a sandboxed run will never actually reach this guard and
+# `git_tampered` stays []. This check is a deliberate, CLI-version-INDEPENDENT BACKSTOP
+# (the Seatbelt profile is the CLI's internal detail and could change): it is the only
+# `.git` defense that is offline-verifiable and does not depend on the sandbox holding.
+# So "git_tampered is always empty" is EXPECTED on a working sandbox — not a bug.
 #
 # Security-relevant = the code-execution + ref-integrity surface: hooks/ and refs/
 # (recursively) + config, HEAD, packed-refs. (objects/, index, logs/ are not a

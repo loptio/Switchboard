@@ -55,3 +55,14 @@
 3. **真 E2E + 沙箱逃逸验证 + 合并,全你本人**(session 本期不跑真 SDK)。
 
 > 给你的 hands-on E2E(到时):跑一个需要命令的任务(如"加个函数并跑测试"),确认命令真跑了 + 被捕获 + 展示了;**然后试着让 agent 越界**(写工作区外、`curl` 外网、读环境变量/密钥)——**确认沙箱拦住**。这一步是这关的真验收,只有你能做。
+
+---
+
+## 8. 逃逸验收发现(real-machine,10b-2-1)
+
+逃逸验收通过,沙箱 containment 站住(越界写 / 网络 / `.git` 全拦)。两处补丁 + 一条记录:
+
+- **【阻断·已修】env 泄漏**:沙箱只管文件 + 网络,**不擦环境变量**;且 SDK 拼子进程 env 是 `{**os.environ, **options.env}`(**合并**,非替换),故沙箱里的 bash 会继承 worker 全量 env(`SECRET_KEY`/`SMTP_PASSWORD`/各 LLM key),经模型通道或 diff 外泄(网络拒管不了)。**修**:`coding_agent` 用最小白名单 env(`PATH`/`HOME`/`LANG`/`LC_*` + bash 超时),并在 SDK 调用窗口内把 `os.environ` 缩到白名单(`_minimal_env`)再还原。订阅认证走 `~/.claude`(靠 `HOME`,非 env),擦 env 不断认证。
+- **【显示·已修】**`commands` 捕获正确(在 `data` 里),但 `RunDetail` 原先只渲染 markdown、不显示命令 → 复用 `CodingDiff`,完成视图也显示 "Commands run" + `.git` 篡改横幅。
+- **【记录·关系】`.git` 主防线在沙箱层**:实测 CLI 的 Seatbelt profile **本身就拒写 `.git/`**(`echo > .git/config` / `.git/hooks/pre-commit` 直接 "operation not permitted")。所以 worker 侧 `.git` 完整性检查(`git_security_*`)是**与 CLI 版本无关的兜底**(Seatbelt profile 是 CLI 内部细节、可能变),也是唯一**可离线验**的 `.git` 防线;**正常沙箱下 `git_tampered` 恒为 `[]` 是预期、不是 bug**(写 `.git` 先被沙箱拦,轮不到它)。
+- **【约束·合并前确认,不卡本期】`_minimal_env()` 擦的是进程全局 `os.environ`、窗口 = 整个 agent 运行**——并发正确性约束(非泄漏)。**今天安全**:`run-once` 独立进程;scheduler worker **顺序执行**(`BlockingScheduler`、`max_instances=1`、单条 drain 循环)。**仅当** worker 改成并发(线程池 / `max_instances>1`)**且** coding run 与吃 env 的 run(如 digest 靠 `SMTP_PASSWORD` 发邮件)并发时,那个 run 会在窗口内读到被擦空的 env → 失败。届时(coding 进共享并发 worker)修:coding run 在 worker 内单飞,或把干净 env 做成**子进程级**、不动共享 `os.environ`。详见 `coding_agent._minimal_env` 注释。
