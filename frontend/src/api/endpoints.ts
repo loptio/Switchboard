@@ -1,7 +1,16 @@
 // Typed wrappers over apiFetch — one function per Unit 1 endpoint. Components
 // call these, never apiFetch directly, so the contract lives in one place.
 import { apiFetch } from "./client";
-import type { Output, Run, RunStatus, Schedule, User } from "./types";
+import type {
+  AgentDef,
+  Manifest,
+  Output,
+  Run,
+  RunStatus,
+  Schedule,
+  User,
+  WorkflowDef,
+} from "./types";
 
 // --- auth ---
 export const login = (username: string, password: string) =>
@@ -59,3 +68,40 @@ export const updateSchedule = (id: string, body: ScheduleUpdate) =>
 
 export const deleteSchedule = (id: string) =>
   apiFetch<void>(`/schedules/${id}`, { method: "DELETE" });
+
+// --- workflow / agent definitions (Phase 8 synthesizer) ---
+export interface DefBody {
+  definition: Record<string, unknown>;
+  name?: string | null;
+  description?: string | null;
+}
+
+export const listWorkflowDefs = () => apiFetch<WorkflowDef[]>("/workflows");
+export const getWorkflowDef = (id: string) => apiFetch<WorkflowDef>(`/workflows/${id}`);
+export const createWorkflowDef = (body: DefBody) =>
+  apiFetch<WorkflowDef>("/workflows", { method: "POST", body });
+export const updateWorkflowDef = (id: string, body: Partial<DefBody>) =>
+  apiFetch<WorkflowDef>(`/workflows/${id}`, { method: "PATCH", body });
+export const cloneWorkflowDef = (id: string, newId: string, name?: string) =>
+  apiFetch<WorkflowDef>(`/workflows/${id}/clone`, {
+    method: "POST",
+    body: { new_id: newId, name },
+  });
+export const deleteWorkflowDef = (id: string) =>
+  apiFetch<void>(`/workflows/${id}`, { method: "DELETE" });
+
+export const listAgentDefs = () => apiFetch<AgentDef[]>("/agents");
+export const getAgentDef = (id: string) => apiFetch<AgentDef>(`/agents/${id}`);
+export const createAgentDef = (body: DefBody) =>
+  apiFetch<AgentDef>("/agents", { method: "POST", body });
+export const updateAgentDef = (id: string, body: Partial<DefBody>) =>
+  apiFetch<AgentDef>(`/agents/${id}`, { method: "PATCH", body });
+export const cloneAgentDef = (id: string, newId: string, name?: string) =>
+  apiFetch<AgentDef>(`/agents/${id}/clone`, {
+    method: "POST",
+    body: { new_id: newId, name },
+  });
+export const deleteAgentDef = (id: string) =>
+  apiFetch<void>(`/agents/${id}`, { method: "DELETE" });
+
+export const getComponents = () => apiFetch<Manifest>("/components");

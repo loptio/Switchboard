@@ -83,3 +83,56 @@ class ScheduleUpdate(BaseModel):
     cron: str | None = None
     tz: str | None = None
     enabled: bool | None = None
+
+
+# --- workflow / agent definitions (Phase 8 synthesizer) --------------------
+# `definition` is the serialized WorkflowDef / AgentDef JSON; its `id` IS the
+# logical def_id/agent_id. `builtin` flags code defaults (read-only — clone to edit).
+
+class WorkflowDefOut(BaseModel):
+    def_id: str
+    name: str | None = None
+    description: str | None = None
+    definition: dict[str, Any]
+    builtin: bool
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class WorkflowDefIn(BaseModel):
+    definition: dict[str, Any]
+    name: str | None = None
+    description: str | None = None
+
+
+class WorkflowDefUpdate(BaseModel):
+    definition: dict[str, Any] | None = None
+    name: str | None = None
+    description: str | None = None
+
+
+class AgentDefOut(BaseModel):
+    agent_id: str
+    name: str | None = None
+    description: str | None = None
+    definition: dict[str, Any]
+    builtin: bool
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class AgentDefIn(BaseModel):
+    definition: dict[str, Any]
+    name: str | None = None
+    description: str | None = None
+
+
+class AgentDefUpdate(BaseModel):
+    definition: dict[str, Any] | None = None
+    name: str | None = None
+    description: str | None = None
+
+
+class CloneIn(BaseModel):
+    new_id: str
+    name: str | None = None

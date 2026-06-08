@@ -6,6 +6,7 @@ const LABEL: Record<RunStatus, string> = {
   running: "Running",
   success: "Success",
   failed: "Failed",
+  awaiting_input: "Awaiting input",
 };
 
 /** A color-coded badge so a run's status reads at a glance. */

@@ -23,3 +23,7 @@
   color: var(--status-failed);
   background: var(--status-failed-bg);
 }
+.awaiting_input {
+  color: #92400e;
+  background: #fef3c7;
+}

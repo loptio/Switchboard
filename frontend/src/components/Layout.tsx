@@ -22,6 +22,12 @@ export function Layout() {
           <NavLink to="/schedules" className={navClass}>
             Schedules
           </NavLink>
+          <NavLink to="/workflows" className={navClass}>
+            Workflows
+          </NavLink>
+          <NavLink to="/agents" className={navClass}>
+            Agents
+          </NavLink>
         </nav>
         <div className={styles.user}>
           {user && <span className={styles.username}>{user.username}</span>}
