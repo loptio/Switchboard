@@ -47,7 +47,7 @@ from brief_agent import (
     summarize_item_agent,
 )
 from sources import SourceItem
-from workflows import BRIEF_DEF
+from workflows import BRIEF_DEF, WorkflowDef
 
 log = logging.getLogger(__name__)
 
@@ -232,6 +232,7 @@ def build_brief(
     filter_fn: Callable[..., list[SourceItem]] = filter_agent,
     summarize_fn: Callable[..., str] = summarize_item_agent,
     perspective_fn: Callable[..., Perspective] = perspective_agent,
+    wf: WorkflowDef | None = None,
 ) -> Brief:
     """Produce a Brief from gathered SourceItems: filter → per-item summary + N
     perspectives → assemble. Symmetric to `build_digest`.
@@ -250,7 +251,20 @@ def build_brief(
             "perspective_fn": perspective_fn,
         }
     }
-    final = _APP.invoke(
+    # wf is None (code default) -> the prebuilt module graph (byte-for-byte); a
+    # DB-resolved override compiles fresh via the FULL registries (load-time guard #2).
+    app = (
+        _APP
+        if wf is None
+        else engine.build_graph(
+            wf,
+            _State,
+            node_handlers=components.NODE_HANDLERS,
+            predicates=components.PREDICATES,
+            composers=components.COMPOSERS,
+        ).compile()
+    )
+    final = app.invoke(
         _initial_state(items, model, list(stances), keep_cap, date_str), config=config
     )
     return _brief_from_dict(final["result"])

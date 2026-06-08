@@ -185,3 +185,100 @@ WORKFLOWS: dict[str, WorkflowDef] = {
     "digest": DIGEST_DEF,
     "brief": BRIEF_DEF,
 }
+
+
+# --- (de)serialization: WorkflowDef <-> JSON (Phase 8) ----------------------
+# Pure data (no langgraph/SDK): the control-plane synthesizer reads/writes these
+# JSON dicts; the worker deserializes one to run it. `to_dict` prunes None optional
+# fields for readable JSON; `from_dict` tolerates their absence (.get) and rebuilds
+# the frozen dataclasses with TUPLES for `nodes`/`body`, so round-trip identity
+# holds (from_dict(to_dict(x)) == x) — pinned by tests. The END sentinel stays the
+# plain string "__end__" throughout (JSON-clean).
+
+_NODE_OPTIONAL_STR_FIELDS = (
+    "handler_ref", "agent_ref", "config_key", "next",
+    "over", "element_key", "collect_ref", "into", "compose_ref",
+)
+
+
+def _node_to_dict(node: Node) -> dict:
+    d: dict = {"id": node.id, "kind": node.kind}
+    for field_name in _NODE_OPTIONAL_STR_FIELDS:
+        value = getattr(node, field_name)
+        if value is not None:
+            d[field_name] = value
+    if node.branch is not None:
+        d["branch"] = {
+            "predicate_ref": node.branch.predicate_ref,
+            "routes": dict(node.branch.routes),
+        }
+    if node.body is not None:
+        d["body"] = [_node_to_dict(b) for b in node.body]
+    return d
+
+
+def _node_from_dict(d: dict) -> Node:
+    branch = d.get("branch")
+    body = d.get("body")
+    return Node(
+        id=d["id"],
+        kind=d["kind"],
+        handler_ref=d.get("handler_ref"),
+        agent_ref=d.get("agent_ref"),
+        config_key=d.get("config_key"),
+        next=d.get("next"),
+        branch=(
+            Branch(predicate_ref=branch["predicate_ref"], routes=dict(branch["routes"]))
+            if branch
+            else None
+        ),
+        over=d.get("over"),
+        element_key=d.get("element_key"),
+        body=tuple(_node_from_dict(b) for b in body) if body is not None else None,
+        collect_ref=d.get("collect_ref"),
+        into=d.get("into"),
+        compose_ref=d.get("compose_ref"),
+    )
+
+
+def workflow_def_to_dict(wf: WorkflowDef) -> dict:
+    """Serialize a WorkflowDef to a plain JSON-able dict. Inverse of from_dict."""
+    d: dict = {
+        "id": wf.id,
+        "entry": wf.entry,
+        "params": dict(wf.params),
+        "nodes": [_node_to_dict(n) for n in wf.nodes],
+    }
+    if wf.source_ref is not None:
+        d["source_ref"] = wf.source_ref
+    if wf.output_ref is not None:
+        d["output_ref"] = wf.output_ref
+    return d
+
+
+def workflow_def_from_dict(d: dict) -> WorkflowDef:
+    """Rebuild a WorkflowDef from its dict form (lists -> tuples so frozen-dataclass
+    equality round-trips). Inverse of workflow_def_to_dict."""
+    return WorkflowDef(
+        id=d["id"],
+        entry=d["entry"],
+        nodes=tuple(_node_from_dict(n) for n in d.get("nodes", [])),
+        params=dict(d.get("params", {})),
+        source_ref=d.get("source_ref"),
+        output_ref=d.get("output_ref"),
+    )
+
+
+def iter_agent_bindings(wf: WorkflowDef):
+    """Yield (agent_ref, config_key) for every node in `wf` that binds an agent,
+    recursing into fan_out bodies. The runner uses this to resolve + assemble a
+    workflow's agents once per run. Pure data — no SDK/langgraph."""
+
+    def _walk(nodes):
+        for n in nodes:
+            if n.agent_ref is not None:
+                yield (n.agent_ref, n.config_key)
+            if n.body is not None:
+                yield from _walk(n.body)
+
+    yield from _walk(wf.nodes)

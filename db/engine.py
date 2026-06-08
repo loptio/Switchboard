@@ -48,6 +48,17 @@ def get_engine() -> Engine:
     return _engine
 
 
+def is_configured() -> bool:
+    """Whether an engine is already configured — WITHOUT creating one.
+
+    The def resolver (Phase 8) gates DB lookups on this so an offline code path
+    (no engine configured, e.g. the agent unit tests) never triggers a lazy
+    connection just to check for a DB override; it falls straight to the code
+    default. Distinct from get_engine(), which would lazily connect.
+    """
+    return _engine is not None
+
+
 def init_db(url: str | None = None) -> Engine:
     """Create all tables. Used by tests and handy for a fresh local DB.
 

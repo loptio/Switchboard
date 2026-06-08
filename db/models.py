@@ -118,3 +118,39 @@ users = Table(
     Column("created_at", _TS, nullable=False),
 )
 Index("ix_users_username", users.c.username, unique=True)  # unique + fast lookup
+
+# A WorkflowDef row = a workflow definition stored as DATA (Phase 8). The
+# control-plane synthesizer writes these; the worker resolves a workflow by id
+# (DB override, else the code default in workflows.WORKFLOWS). `def_id` is the
+# logical workflow id (== definition["id"], e.g. "news"/"brief"/a user's id);
+# `definition` is the serialized WorkflowDef JSON (workflows.workflow_def_to_dict).
+# Edit-in-place (no versioning); built-ins are NOT seeded — an empty table means
+# every workflow resolves to the code default (the no-regression safety net).
+workflow_defs = Table(
+    "workflow_defs",
+    metadata,
+    Column("id", _UUID, primary_key=True),
+    Column("def_id", Text, nullable=False),  # logical id; == definition["id"]
+    Column("name", Text, nullable=True),  # UI label
+    Column("description", Text, nullable=True),
+    Column("definition", _JSON, nullable=False),  # serialized WorkflowDef
+    Column("created_at", _TS, nullable=False),
+    Column("updated_at", _TS, nullable=True),
+)
+Index("ix_workflow_defs_def_id", workflow_defs.c.def_id, unique=True)
+
+# An AgentDef row = an agent definition stored as DATA (Phase 8). Resolved by id
+# (DB override, else the code default in agentdefs.AGENT_DEFS). `agent_id` ==
+# definition["id"]; `definition` is the serialized AgentDef JSON.
+agent_defs = Table(
+    "agent_defs",
+    metadata,
+    Column("id", _UUID, primary_key=True),
+    Column("agent_id", Text, nullable=False),  # logical id; == definition["id"]
+    Column("name", Text, nullable=True),
+    Column("description", Text, nullable=True),
+    Column("definition", _JSON, nullable=False),  # serialized AgentDef
+    Column("created_at", _TS, nullable=False),
+    Column("updated_at", _TS, nullable=True),
+)
+Index("ix_agent_defs_agent_id", agent_defs.c.agent_id, unique=True)

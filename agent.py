@@ -274,6 +274,7 @@ def summarize_agent(
     feedback: Critique | None = None,
     language: str = DEFAULT_LANGUAGE,
     llm: Callable[..., str] = complete,
+    system_prompt: str | None = None,
 ) -> Digest:
     """Summarizer agent: items (+ optional reviewer feedback) -> validated Digest.
 
@@ -289,7 +290,15 @@ def summarize_agent(
     prompt = _build_prompt(items, n)
     if feedback is not None and feedback.issues:
         prompt = f"{prompt}\n\n{_format_feedback(feedback)}"
-    raw = llm(prompt, system_prompt=summary_system_prompt(language), model=model)
+    # `system_prompt` (a template) lets the runner inject a DB-resolved AgentDef
+    # prompt (Phase 8); None => the code default. The {language} marker is rendered
+    # here either way (str.replace, so literal JSON braces in the text are safe).
+    sp = (
+        render(system_prompt, language=language)
+        if system_prompt is not None
+        else summary_system_prompt(language)
+    )
+    raw = llm(prompt, system_prompt=sp, model=model)
     return parse_digest(raw, chosen)
 
 
@@ -318,6 +327,7 @@ def verify_agent(
     model: str,
     *,
     llm: Callable[..., str] = complete,
+    system_prompt: str | None = None,
 ) -> Critique:
     """Verifier agent: candidate Digest + SOURCE items -> validated Critique.
 
@@ -330,5 +340,6 @@ def verify_agent(
         return Critique(passed=True, issues=[])  # nothing to review
     chosen = items[: len(digest.items)]  # the source items that were summarized
     prompt = _build_verifier_prompt(digest, chosen)
-    raw = llm(prompt, system_prompt=VERIFIER_SYSTEM_PROMPT, model=model)
+    sp = system_prompt if system_prompt is not None else VERIFIER_SYSTEM_PROMPT
+    raw = llm(prompt, system_prompt=sp, model=model)
     return parse_critique(raw)

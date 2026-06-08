@@ -170,3 +170,33 @@ AGENT_DEFS: dict[str, AgentDef] = {
         params={"language": DEFAULT_LANGUAGE},
     ),
 }
+
+
+# --- (de)serialization: AgentDef <-> JSON (Phase 8) -------------------------
+# Pure data: the synthesizer reads/writes these; the worker deserializes a DB
+# override to run it. Round-trip identity (from_dict(to_dict(x)) == x) is pinned by
+# tests. `model=None` and an empty `params` round-trip faithfully.
+
+
+def agent_def_to_dict(a: AgentDef) -> dict:
+    """Serialize an AgentDef to a plain JSON-able dict. Inverse of from_dict."""
+    return {
+        "id": a.id,
+        "system_prompt": a.system_prompt,
+        "prompt_builder_ref": a.prompt_builder_ref,
+        "parser_ref": a.parser_ref,
+        "model": a.model,
+        "params": dict(a.params),
+    }
+
+
+def agent_def_from_dict(d: dict) -> AgentDef:
+    """Rebuild an AgentDef from its dict form. Inverse of agent_def_to_dict."""
+    return AgentDef(
+        id=d["id"],
+        system_prompt=d["system_prompt"],
+        prompt_builder_ref=d["prompt_builder_ref"],
+        parser_ref=d["parser_ref"],
+        model=d.get("model"),
+        params=dict(d.get("params", {})),
+    )

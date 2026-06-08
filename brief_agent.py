@@ -149,6 +149,7 @@ def filter_agent(
     *,
     keep_cap: int = KEEP_CAP,
     llm: Callable[..., str] = complete,
+    system_prompt: str | None = None,
 ) -> list[SourceItem]:
     """Filter agent: candidate items -> the kept SourceItems (<= keep_cap).
 
@@ -159,7 +160,8 @@ def filter_agent(
     if not items:
         return []
     prompt = _build_filter_prompt(items, keep_cap)
-    raw = llm(prompt, system_prompt=FILTER_SYSTEM_PROMPT, model=model)
+    sp = system_prompt if system_prompt is not None else FILTER_SYSTEM_PROMPT
+    raw = llm(prompt, system_prompt=sp, model=model)
     indices = parse_filter(raw, len(items), keep_cap)
     return [items[i - 1] for i in indices]
 
@@ -196,13 +198,15 @@ def summarize_item_agent(
     *,
     language: str = DEFAULT_LANGUAGE,
     llm: Callable[..., str] = complete,
+    system_prompt: str | None = None,
 ) -> str:
     """Summary agent: one item -> a concise, grounded summary string in `language`."""
-    raw = llm(
-        _build_summary_prompt(item),
-        system_prompt=_summary_system_prompt(language),
-        model=model,
+    sp = (
+        render(system_prompt, language=language)
+        if system_prompt is not None
+        else _summary_system_prompt(language)
     )
+    raw = llm(_build_summary_prompt(item), system_prompt=sp, model=model)
     return parse_summary(raw)
 
 
@@ -237,6 +241,7 @@ def perspective_agent(
     *,
     language: str = DEFAULT_LANGUAGE,
     llm: Callable[..., str] = complete,
+    system_prompt: str | None = None,
 ) -> Perspective:
     """Perspective agent: one item + one stance -> a Perspective (take in `language`).
 
@@ -244,9 +249,10 @@ def perspective_agent(
     context). `stance` is set by us on the returned Perspective — the model writes
     only the `take`, never which stance this is.
     """
-    raw = llm(
-        _build_perspective_prompt(item),
-        system_prompt=_perspective_system_prompt(stance, language),
-        model=model,
+    sp = (
+        render(system_prompt, stance=stance, language=language)
+        if system_prompt is not None
+        else _perspective_system_prompt(stance, language)
     )
+    raw = llm(_build_perspective_prompt(item), system_prompt=sp, model=model)
     return parse_perspective(raw, stance)

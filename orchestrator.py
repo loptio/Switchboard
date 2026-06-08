@@ -65,7 +65,7 @@ from agent import (
     verify_agent,
 )
 from fetch import FeedItem
-from workflows import DIGEST_DEF
+from workflows import DIGEST_DEF, WorkflowDef
 
 log = logging.getLogger(__name__)
 
@@ -366,6 +366,23 @@ _BUILDER = engine.build_graph(
 _APP = _BUILDER.compile()  # no checkpointer: the digest default runs straight through
 
 
+def _builder_for(wf: WorkflowDef | None):
+    """The graph builder for a run: the prebuilt module builder for the code default
+    (wf is None — byte-for-byte the pre-Phase-8 path), else a fresh builder compiled
+    from a DB-resolved WorkflowDef using the FULL component registries (a user def may
+    reference any registered handler/predicate/composer). This is the load-time guard
+    (#2): a bad ref or broken topology raises here (engine.build_graph / .compile)."""
+    if wf is None:
+        return _BUILDER
+    return engine.build_graph(
+        wf,
+        _State,
+        node_handlers=components.NODE_HANDLERS,
+        predicates=components.PREDICATES,
+        composers=components.COMPOSERS,
+    )
+
+
 def _initial_state(
     items: list[FeedItem], n: int, model: str, max_redos: int, *, review: bool = False
 ) -> _State:
@@ -399,6 +416,7 @@ def build_digest(
     max_redos: int = DEFAULT_MAX_REDOS,
     summarize_fn: Callable[..., Digest] = summarize_agent,
     verify_fn: Callable[..., Critique] = verify_agent,
+    wf: WorkflowDef | None = None,
 ) -> Digest:
     """Produce a verified Digest via a bounded summarize → verify → redo loop.
 
@@ -409,11 +427,12 @@ def build_digest(
     if not items:
         return Digest(items=[])  # short-circuit: no model/graph work for empty input
 
+    app = _APP if wf is None else _builder_for(wf).compile()
     config = {
         "configurable": {"summarize_fn": summarize_fn, "verify_fn": verify_fn},
         "recursion_limit": _recursion_limit(max_redos),
     }
-    final = _APP.invoke(_initial_state(items, n, model, max_redos), config=config)
+    final = app.invoke(_initial_state(items, n, model, max_redos), config=config)
     if final["result"] is None:
         # The give-up terminal: the summarizer never produced a schema-valid
         # digest within budget. Raise (the run is recorded failed) — no dirty data.
@@ -465,6 +484,7 @@ def start_review_run(
     max_redos: int = DEFAULT_MAX_REDOS,
     summarize_fn: Callable[..., Digest] = summarize_agent,
     verify_fn: Callable[..., Critique] = verify_agent,
+    wf: WorkflowDef | None = None,
 ) -> ReviewOutcome:
     """Run the graph with the human-review gate ON, persisting to `checkpointer`
     under `thread_id`. Returns suspended (paused at the gate) or completed.
@@ -474,7 +494,7 @@ def start_review_run(
     """
     if not items:
         return ReviewOutcome(status="completed", digest=Digest(items=[]))
-    app = _BUILDER.compile(checkpointer=checkpointer)
+    app = _builder_for(wf).compile(checkpointer=checkpointer)
     config = {
         "configurable": {
             "thread_id": thread_id,
@@ -495,6 +515,7 @@ def resume_review_run(
     max_redos: int = DEFAULT_MAX_REDOS,
     summarize_fn: Callable[..., Digest] = summarize_agent,
     verify_fn: Callable[..., Critique] = verify_agent,
+    wf: WorkflowDef | None = None,
 ) -> ReviewOutcome:
     """Resume a suspended run from its checkpoint, injecting `decision` into the
     waiting interrupt() (e.g. {"action": "approve"} or
@@ -505,7 +526,7 @@ def resume_review_run(
     fresh bounded auto-loop and re-presents (status="suspended" again); "approve"
     completes (status="completed").
     """
-    app = _BUILDER.compile(checkpointer=checkpointer)
+    app = _builder_for(wf).compile(checkpointer=checkpointer)
     config = {
         "configurable": {
             "thread_id": thread_id,

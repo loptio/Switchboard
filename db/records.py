@@ -112,3 +112,52 @@ class Schedule:
             next_run_at=_utc(row["next_run_at"]),
             created_at=_utc(row["created_at"]),
         )
+
+
+# Named *Row (not WorkflowDef/AgentDef) to avoid colliding with the pure-data
+# dataclasses workflows.WorkflowDef / agentdefs.AgentDef. The `definition` field
+# holds the serialized def JSON (a plain dict on both Postgres JSONB and SQLite).
+@dataclass(frozen=True)
+class WorkflowDefRow:
+    id: str
+    def_id: str
+    name: str | None
+    description: str | None
+    definition: dict
+    created_at: datetime
+    updated_at: datetime | None
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any]) -> "WorkflowDefRow":
+        return cls(
+            id=str(row["id"]),
+            def_id=row["def_id"],
+            name=row["name"],
+            description=row["description"],
+            definition=row["definition"],
+            created_at=_utc(row["created_at"]),
+            updated_at=_utc(row["updated_at"]),
+        )
+
+
+@dataclass(frozen=True)
+class AgentDefRow:
+    id: str
+    agent_id: str
+    name: str | None
+    description: str | None
+    definition: dict
+    created_at: datetime
+    updated_at: datetime | None
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any]) -> "AgentDefRow":
+        return cls(
+            id=str(row["id"]),
+            agent_id=row["agent_id"],
+            name=row["name"],
+            description=row["description"],
+            definition=row["definition"],
+            created_at=_utc(row["created_at"]),
+            updated_at=_utc(row["updated_at"]),
+        )

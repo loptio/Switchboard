@@ -26,8 +26,17 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from .engine import get_engine
-from .models import RUN_STATUSES, RUN_TRIGGERS, outputs, runs, schedules, users
-from .records import Output, Run, Schedule, User
+from .models import (
+    RUN_STATUSES,
+    RUN_TRIGGERS,
+    agent_defs,
+    outputs,
+    runs,
+    schedules,
+    users,
+    workflow_defs,
+)
+from .records import AgentDefRow, Output, Run, Schedule, User, WorkflowDefRow
 
 # Sentinel for "argument not supplied" where None is a meaningful value.
 _UNSET = object()
@@ -519,3 +528,223 @@ def set_user_password(username: str, password_hash: str) -> User:
             .one()
         )
     return User.from_row(row)
+
+
+# --- Workflow definitions (Phase 8) ---------------------------------------
+# Stored as data; the worker resolves a workflow by id (DB override else the code
+# default in workflows.WORKFLOWS). `def_id` is an arbitrary logical string (not a
+# UUID), so lookups need no _is_uuid guard — a non-matching key just returns None.
+
+def create_workflow_def(
+    def_id: str,
+    definition: dict,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    now: datetime | None = None,
+) -> WorkflowDefRow:
+    """Insert a workflow definition. Raises ValueError if `def_id` already exists."""
+    rid = _new_id()
+    created = _to_utc(now) if now is not None else _now()
+    try:
+        with get_engine().begin() as conn:
+            conn.execute(
+                workflow_defs.insert().values(
+                    id=rid,
+                    def_id=def_id,
+                    name=name,
+                    description=description,
+                    definition=definition,
+                    created_at=created,
+                    updated_at=None,
+                )
+            )
+    except IntegrityError as exc:
+        raise ValueError(f"workflow def {def_id!r} already exists") from exc
+    return WorkflowDefRow(
+        id=rid,
+        def_id=def_id,
+        name=name,
+        description=description,
+        definition=definition,
+        created_at=created,
+        updated_at=None,
+    )
+
+
+def get_workflow_def(def_id: str) -> WorkflowDefRow | None:
+    """Fetch a workflow def by its logical id, or None."""
+    with get_engine().connect() as conn:
+        row = (
+            conn.execute(
+                select(workflow_defs).where(workflow_defs.c.def_id == def_id)
+            )
+            .mappings()
+            .first()
+        )
+    return WorkflowDefRow.from_row(row) if row else None
+
+
+def list_workflow_defs() -> list[WorkflowDefRow]:
+    """All workflow defs, oldest first."""
+    with get_engine().connect() as conn:
+        rows = (
+            conn.execute(
+                select(workflow_defs).order_by(workflow_defs.c.created_at.asc())
+            )
+            .mappings()
+            .all()
+        )
+    return [WorkflowDefRow.from_row(r) for r in rows]
+
+
+def update_workflow_def(
+    def_id: str,
+    *,
+    definition: dict = _UNSET,  # type: ignore[assignment]
+    name: str | None = _UNSET,  # type: ignore[assignment]
+    description: str | None = _UNSET,  # type: ignore[assignment]
+    now: datetime | None = None,
+) -> WorkflowDefRow:
+    """Update a workflow def's fields (omitted = unchanged); stamps updated_at.
+
+    Raises LookupError if the def_id is unknown.
+    """
+    values: dict = {"updated_at": _to_utc(now) if now is not None else _now()}
+    if definition is not _UNSET:
+        values["definition"] = definition
+    if name is not _UNSET:
+        values["name"] = name
+    if description is not _UNSET:
+        values["description"] = description
+    with get_engine().begin() as conn:
+        result = conn.execute(
+            update(workflow_defs)
+            .where(workflow_defs.c.def_id == def_id)
+            .values(**values)
+        )
+        if result.rowcount == 0:
+            raise LookupError(f"No workflow def with def_id {def_id!r}")
+        row = (
+            conn.execute(
+                select(workflow_defs).where(workflow_defs.c.def_id == def_id)
+            )
+            .mappings()
+            .one()
+        )
+    return WorkflowDefRow.from_row(row)
+
+
+def delete_workflow_def(def_id: str) -> None:
+    """Delete a workflow def. Raises LookupError if it does not exist."""
+    with get_engine().begin() as conn:
+        result = conn.execute(
+            workflow_defs.delete().where(workflow_defs.c.def_id == def_id)
+        )
+        if result.rowcount == 0:
+            raise LookupError(f"No workflow def with def_id {def_id!r}")
+
+
+# --- Agent definitions (Phase 8) ------------------------------------------
+# Symmetric to workflow_defs; resolved by id (DB override else agentdefs.AGENT_DEFS).
+
+def create_agent_def(
+    agent_id: str,
+    definition: dict,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    now: datetime | None = None,
+) -> AgentDefRow:
+    """Insert an agent definition. Raises ValueError if `agent_id` already exists."""
+    rid = _new_id()
+    created = _to_utc(now) if now is not None else _now()
+    try:
+        with get_engine().begin() as conn:
+            conn.execute(
+                agent_defs.insert().values(
+                    id=rid,
+                    agent_id=agent_id,
+                    name=name,
+                    description=description,
+                    definition=definition,
+                    created_at=created,
+                    updated_at=None,
+                )
+            )
+    except IntegrityError as exc:
+        raise ValueError(f"agent def {agent_id!r} already exists") from exc
+    return AgentDefRow(
+        id=rid,
+        agent_id=agent_id,
+        name=name,
+        description=description,
+        definition=definition,
+        created_at=created,
+        updated_at=None,
+    )
+
+
+def get_agent_def(agent_id: str) -> AgentDefRow | None:
+    """Fetch an agent def by its logical id, or None."""
+    with get_engine().connect() as conn:
+        row = (
+            conn.execute(select(agent_defs).where(agent_defs.c.agent_id == agent_id))
+            .mappings()
+            .first()
+        )
+    return AgentDefRow.from_row(row) if row else None
+
+
+def list_agent_defs() -> list[AgentDefRow]:
+    """All agent defs, oldest first."""
+    with get_engine().connect() as conn:
+        rows = (
+            conn.execute(select(agent_defs).order_by(agent_defs.c.created_at.asc()))
+            .mappings()
+            .all()
+        )
+    return [AgentDefRow.from_row(r) for r in rows]
+
+
+def update_agent_def(
+    agent_id: str,
+    *,
+    definition: dict = _UNSET,  # type: ignore[assignment]
+    name: str | None = _UNSET,  # type: ignore[assignment]
+    description: str | None = _UNSET,  # type: ignore[assignment]
+    now: datetime | None = None,
+) -> AgentDefRow:
+    """Update an agent def's fields (omitted = unchanged); stamps updated_at.
+
+    Raises LookupError if the agent_id is unknown.
+    """
+    values: dict = {"updated_at": _to_utc(now) if now is not None else _now()}
+    if definition is not _UNSET:
+        values["definition"] = definition
+    if name is not _UNSET:
+        values["name"] = name
+    if description is not _UNSET:
+        values["description"] = description
+    with get_engine().begin() as conn:
+        result = conn.execute(
+            update(agent_defs).where(agent_defs.c.agent_id == agent_id).values(**values)
+        )
+        if result.rowcount == 0:
+            raise LookupError(f"No agent def with agent_id {agent_id!r}")
+        row = (
+            conn.execute(select(agent_defs).where(agent_defs.c.agent_id == agent_id))
+            .mappings()
+            .one()
+        )
+    return AgentDefRow.from_row(row)
+
+
+def delete_agent_def(agent_id: str) -> None:
+    """Delete an agent def. Raises LookupError if it does not exist."""
+    with get_engine().begin() as conn:
+        result = conn.execute(
+            agent_defs.delete().where(agent_defs.c.agent_id == agent_id)
+        )
+        if result.rowcount == 0:
+            raise LookupError(f"No agent def with agent_id {agent_id!r}")

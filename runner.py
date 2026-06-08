@@ -32,8 +32,12 @@ from dataclasses import asdict
 from datetime import date, datetime
 from functools import partial
 
+import agentdefs
 import checkpoint
+import components
 import db
+import defs_resolve
+import workflows
 from agent import Digest, summarize_agent
 from brief_agent import Brief, perspective_agent, summarize_item_agent
 from brief_orchestrator import build_brief
@@ -45,6 +49,53 @@ from output import render_brief_markdown, render_markdown, write_brief, write_di
 from sources import gather_sources
 
 log = logging.getLogger(__name__)
+
+
+# --- agent assembly (Phase 8) ----------------------------------------------
+# Resolve each agent a workflow references ONCE per run (DB override else code) and
+# bind its system_prompt (+ language) into the registered base callable, keyed by the
+# node's config_key (which IS the orchestrator build-fn kwarg). The base callable is
+# found by the agent's (prompt_builder_ref, parser_ref), so a cloned agent reusing a
+# built-in's builder/parser maps to the same callable with the new (DB) prompt.
+_LANGUAGE_AWARE_AGENTS = {"summarize", "summarize_item", "perspective"}
+_AGENT_BASE_BY_REFS = {
+    (adef.prompt_builder_ref, adef.parser_ref): (
+        components.AGENTS[aid],
+        aid in _LANGUAGE_AWARE_AGENTS,
+    )
+    for aid, adef in agentdefs.AGENT_DEFS.items()
+}
+
+
+def _make_agent_fn(agent_def, cfg: Config):
+    """Bind a resolved AgentDef's system_prompt (+ output language) into its base
+    callable. Raises ValueError if the (builder, parser) pair is unregistered."""
+    key = (agent_def.prompt_builder_ref, agent_def.parser_ref)
+    try:
+        base, language_aware = _AGENT_BASE_BY_REFS[key]
+    except KeyError:
+        raise ValueError(
+            f"agent {agent_def.id!r} uses unregistered "
+            f"(prompt_builder_ref, parser_ref)={key}; no base agent callable"
+        ) from None
+    kwargs = {"system_prompt": agent_def.system_prompt}
+    if language_aware:
+        kwargs["language"] = cfg.output_language
+    return partial(base, **kwargs)
+
+
+def _agent_fns_for(wf, cfg: Config) -> dict:
+    """Resolve every agent `wf` references ONCE and build the bound callables, keyed
+    by config_key (== the orchestrator build-fn kwarg name)."""
+    resolved: dict = {}
+    fns: dict = {}
+    for agent_ref, config_key in workflows.iter_agent_bindings(wf):
+        if not config_key:
+            continue
+        if agent_ref not in resolved:
+            resolved[agent_ref] = defs_resolve.resolve_agent_def(agent_ref)
+        fns[config_key] = _make_agent_fn(resolved[agent_ref], cfg)
+    return fns
 
 
 def _digest_to_data(digest: Digest, feed_url: str, day: date) -> dict:
@@ -122,32 +173,32 @@ def _finalize_brief(run: db.Run, brief: Brief, cfg: Config, now: datetime | None
     return final
 
 
-def _run_digest_pipeline(run: db.Run, cfg: Config, now: datetime | None) -> db.Run:
+def _run_digest_pipeline(
+    run: db.Run, cfg: Config, now: datetime | None, *, wf, wf_arg
+) -> db.Run:
     try:
         items = fetch_feed(cfg.feed_url)
-        # Bind the configured output language into the summarizer (one_line_summary
-        # is written in that language; title/link stay verbatim from the source).
-        digest = build_digest(
-            items, cfg.count, cfg.model,
-            summarize_fn=partial(summarize_agent, language=cfg.output_language),
-        )
+        # Agents resolved once (DB override else code) and bound with the configured
+        # output language; one_line_summary is written in that language while
+        # title/link stay verbatim from the source. wf_arg=None => the module graph.
+        agent_fns = _agent_fns_for(wf, cfg)
+        digest = build_digest(items, cfg.count, cfg.model, wf=wf_arg, **agent_fns)
     except Exception as exc:
         log.exception("run %s failed", run.id)
         return db.mark_failed(run.id, str(exc), now=now)
     return _finalize(run, digest, cfg, now)
 
 
-def _run_brief_pipeline(run: db.Run, cfg: Config, now: datetime | None) -> db.Run:
+def _run_brief_pipeline(
+    run: db.Run, cfg: Config, now: datetime | None, *, wf, wf_arg
+) -> db.Run:
     try:
         day = now.date() if now is not None else date.today()
         items = gather_sources()
         # Summary + perspective takes are written in the configured language; the
         # filter is language-agnostic and provenance is never translated.
-        brief = build_brief(
-            items, model=cfg.model, day=day,
-            summarize_fn=partial(summarize_item_agent, language=cfg.output_language),
-            perspective_fn=partial(perspective_agent, language=cfg.output_language),
-        )
+        agent_fns = _agent_fns_for(wf, cfg)
+        brief = build_brief(items, model=cfg.model, day=day, wf=wf_arg, **agent_fns)
     except Exception as exc:
         log.exception("run %s failed", run.id)
         return db.mark_failed(run.id, str(exc), now=now)
@@ -155,19 +206,29 @@ def _run_brief_pipeline(run: db.Run, cfg: Config, now: datetime | None) -> db.Ru
 
 
 def _run_pipeline(run: db.Run, cfg: Config, now: datetime | None) -> db.Run:
-    """Run the (non-interactive) pipeline for an already-running `run`, DISPATCHING
-    on the run's workflow: 'brief' → the brief workflow, anything else (incl. the
-    legacy 'news'/'digest' label) → the digest workflow.
+    """Run the (non-interactive) pipeline for an already-running `run`.
 
-    This is the workflow selector (brief §8): a simple dispatch, not the data-driven
-    orchestrator (that is Phase 7). Never raises: a failure is caught, recorded
+    Phase 8: resolve the WorkflowDef by id (DB override, else code default), select
+    the harness by its `output_ref` ('brief' → the brief workflow, else digest), and
+    pass the resolved def to the generic engine (None for a code default → the
+    orchestrator's prebuilt module graph, byte-for-byte the pre-Phase-8 path).
+
+    Never raises: an unknown workflow or a pipeline failure is caught, recorded
     (status=failed) and the failed Run returned, so one bad run never crashes the
-    caller (scheduler tick). The run must already be in the `running` state.
-    Shared by run_once and execute_claimed_run.
+    caller (scheduler tick). The run must already be in the `running` state. Shared
+    by run_once and execute_claimed_run.
     """
-    if run.workflow == "brief":
-        return _run_brief_pipeline(run, cfg, now)
-    return _run_digest_pipeline(run, cfg, now)
+    try:
+        wf = defs_resolve.resolve_workflow_def(run.workflow)
+    except KeyError:
+        log.exception("run %s: unknown workflow %r", run.id, run.workflow)
+        return db.mark_failed(run.id, f"unknown workflow {run.workflow!r}", now=now)
+    # Code default -> None (use the orchestrator's prebuilt module graph); a DB
+    # override -> pass the def so the engine compiles it fresh (load-time guard #2).
+    wf_arg = None if wf is workflows.WORKFLOWS.get(run.workflow) else wf
+    if wf.output_ref == "brief":
+        return _run_brief_pipeline(run, cfg, now, wf=wf, wf_arg=wf_arg)
+    return _run_digest_pipeline(run, cfg, now, wf=wf, wf_arg=wf_arg)
 
 
 def run_once(
