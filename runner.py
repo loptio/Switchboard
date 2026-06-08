@@ -26,6 +26,7 @@ Entry points, all sharing one `_finalize` (render/store/email/mark_success):
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import nullcontext
 from dataclasses import asdict
@@ -38,7 +39,7 @@ import components
 import db
 import defs_resolve
 import workflows
-from agent import Digest, summarize_agent
+from agent import Digest, summarize_agent, verify_agent
 from brief_agent import Brief, perspective_agent, summarize_item_agent
 from brief_orchestrator import build_brief
 from config import Config, load_config
@@ -252,7 +253,13 @@ def run_once(
 
 
 def execute_claimed_run(
-    run: db.Run, *, config: Config | None = None, now: datetime | None = None
+    run: db.Run,
+    *,
+    config: Config | None = None,
+    now: datetime | None = None,
+    checkpointer=None,
+    summarize_fn=None,
+    verify_fn=None,
 ) -> db.Run:
     """Execute a run the worker already CLAIMED (status=running); return the Run.
 
@@ -260,9 +267,22 @@ def execute_claimed_run(
     claims it (db.claim_next_pending_run) and calls this to run the pipeline. The
     web process never calls this — doing so would load the Agent SDK into the web
     tier, which is exactly what the handoff avoids.
+
+    Phase 8: a run flagged `review` (digest family) takes the interruptible path —
+    it suspends at the human-review gate (awaiting_input) for a web approve/redo —
+    instead of running straight through. `checkpointer`/`summarize_fn`/`verify_fn`
+    are injectable for offline tests (an InMemorySaver + fakes).
     """
     cfg = config or load_config()
-    log.info("run %s claimed for execution (trigger=%s)", run.id, run.trigger)
+    log.info(
+        "run %s claimed for execution (trigger=%s, review=%s)",
+        run.id, run.trigger, run.review,
+    )
+    if run.review:
+        return _run_review_claimed(
+            run, cfg, now,
+            checkpointer=checkpointer, summarize_fn=summarize_fn, verify_fn=verify_fn,
+        )
     return _run_pipeline(run, cfg, now)
 
 
@@ -293,10 +313,28 @@ def _agent_kwargs(cfg: Config, summarize_fn, verify_fn) -> dict:
     return kw
 
 
+def _save_review_payload(run_id: str, payload: dict | None, now: datetime | None) -> None:
+    """Persist the candidate awaiting approval as a type="review" Output so the web
+    can render it — it otherwise lives only in the langgraph checkpoint, which the web
+    can't read. type="review" is EXCLUDED from the deliverable outputs view and is
+    never emailed (it is suspend state, not a product)."""
+    try:
+        db.save_output(
+            run_id,
+            json.dumps(payload or {}, ensure_ascii=False),
+            type="review",
+            data=payload or {},
+            now=now,
+        )
+    except Exception as exc:  # never let bookkeeping fail the suspend
+        log.warning("run %s: failed to persist review payload: %s", run_id, exc)
+
+
 def _apply_outcome(
     run: db.Run, outcome: ReviewOutcome, cfg: Config, now: datetime | None
 ) -> tuple[db.Run, ReviewOutcome]:
     if outcome.status == "suspended":
+        _save_review_payload(run.id, outcome.payload, now)
         suspended = db.mark_awaiting_input(run.id)
         log.info("run %s suspended for human review (awaiting_input)", run.id)
         return suspended, outcome
@@ -379,3 +417,87 @@ def resume_run(
     except Exception as exc:
         log.exception("run %s failed during resume", run_id)
         return db.mark_failed(run_id, str(exc), now=now), None
+
+
+# --- web human-in-the-loop: worker-side start + resume handoff (Phase 8) ------
+# The web writes intent (a review-flagged pending Run; a pending_decision on an
+# awaiting_input Run); the worker claims and drives the interruptible graph. The web
+# never calls these (they load langgraph/the SDK).
+
+
+def _run_review_claimed(
+    run: db.Run,
+    cfg: Config,
+    now: datetime | None,
+    *,
+    checkpointer=None,
+    summarize_fn=None,
+    verify_fn=None,
+) -> db.Run:
+    """Start an interruptible REVIEW run the worker claimed: run the auto-loop, then
+    suspend at the human-review gate (awaiting_input, payload persisted) or finalize.
+    Review is digest-only — a non-digest def falls back to the straight pipeline."""
+    try:
+        wf = defs_resolve.resolve_workflow_def(run.workflow)
+    except KeyError:
+        log.exception("run %s: unknown workflow %r", run.id, run.workflow)
+        return db.mark_failed(run.id, f"unknown workflow {run.workflow!r}", now=now)
+    if wf.output_ref != "digest":
+        return _run_pipeline(run, cfg, now)  # the review gate is digest-only
+    wf_arg = None if wf is workflows.WORKFLOWS.get(run.workflow) else wf
+    try:
+        with _checkpointer_cm(checkpointer) as cp:
+            items = fetch_feed(cfg.feed_url)
+            fns = _agent_fns_for(wf, cfg)
+            outcome = start_review_run(
+                items,
+                cfg.count,
+                cfg.model,
+                thread_id=run.id,
+                checkpointer=cp,
+                wf=wf_arg,
+                summarize_fn=summarize_fn if summarize_fn is not None else fns.get("summarize_fn", summarize_agent),
+                verify_fn=verify_fn if verify_fn is not None else fns.get("verify_fn", verify_agent),
+            )
+        return _apply_outcome(run, outcome, cfg, now)[0]
+    except Exception as exc:
+        log.exception("run %s failed", run.id)
+        return db.mark_failed(run.id, str(exc), now=now)
+
+
+def resume_claimed_run(
+    run: db.Run,
+    *,
+    config: Config | None = None,
+    now: datetime | None = None,
+    checkpointer=None,
+    summarize_fn=None,
+    verify_fn=None,
+) -> db.Run:
+    """Resume an already-CLAIMED awaiting_input run with its web-written
+    pending_decision (the worker half of the web resume handoff). Clears the decision
+    once consumed; re-suspends (awaiting_input) on a redo, finalizes on approve."""
+    cfg = config or load_config()
+    decision = run.pending_decision or {}
+    try:
+        wf = defs_resolve.resolve_workflow_def(run.workflow)
+    except KeyError:
+        return db.mark_failed(run.id, f"unknown workflow {run.workflow!r}", now=now)
+    wf_arg = None if wf is workflows.WORKFLOWS.get(run.workflow) else wf
+    log.info("run %s resumed from web (decision=%s)", run.id, decision.get("action"))
+    try:
+        with _checkpointer_cm(checkpointer) as cp:
+            fns = _agent_fns_for(wf, cfg)
+            outcome = resume_review_run(
+                thread_id=run.id,
+                checkpointer=cp,
+                decision=decision,
+                wf=wf_arg,
+                summarize_fn=summarize_fn if summarize_fn is not None else fns.get("summarize_fn", summarize_agent),
+                verify_fn=verify_fn if verify_fn is not None else fns.get("verify_fn", verify_agent),
+            )
+        db.clear_run_decision(run.id)  # consumed
+        return _apply_outcome(run, outcome, cfg, now)[0]
+    except Exception as exc:
+        log.exception("run %s failed during resume", run.id)
+        return db.mark_failed(run.id, str(exc), now=now)

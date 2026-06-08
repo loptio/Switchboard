@@ -77,9 +77,14 @@ def create_run(
     workflow: str = "news",
     trigger: str = "manual",
     *,
+    review: bool = False,
     now: datetime | None = None,
 ) -> Run:
-    """Insert a new Run in the `pending` state and return it."""
+    """Insert a new Run in the `pending` state and return it.
+
+    `review` (Phase 8): request the human-review gate — the worker drives the
+    interruptible path for this run (digest family only) instead of straight-through.
+    """
     if trigger not in RUN_TRIGGERS:
         raise ValueError(f"trigger must be one of {RUN_TRIGGERS}, got {trigger!r}")
     rid = _new_id()
@@ -92,6 +97,7 @@ def create_run(
                 status="pending",
                 trigger=trigger,
                 created_at=created,
+                review=review,
             )
         )
     return Run(
@@ -103,6 +109,7 @@ def create_run(
         started_at=None,
         finished_at=None,
         error=None,
+        review=review,
     )
 
 
@@ -224,6 +231,67 @@ def claim_next_pending_run(*, now: datetime | None = None) -> Run | None:
                 )
                 return Run.from_row(stored)
             # rowcount 0: lost the race for this row — try the next pending one.
+
+
+def set_run_decision(run_id: str, decision: dict) -> Run:
+    """Record a human resume decision for an `awaiting_input` run (Phase 8 web->worker
+    handoff). The worker claims it via claim_next_resumable_run and resumes. Raises
+    LookupError if missing, ValueError if the run is not awaiting_input."""
+    if not _is_uuid(run_id):
+        raise LookupError(f"No run with id {run_id!r}")
+    with get_engine().begin() as conn:
+        row = conn.execute(select(runs).where(runs.c.id == run_id)).mappings().first()
+        if row is None:
+            raise LookupError(f"No run with id {run_id!r}")
+        if row["status"] != "awaiting_input":
+            raise ValueError(f"run {run_id} is {row['status']!r}, not awaiting_input")
+        conn.execute(
+            update(runs).where(runs.c.id == run_id).values(pending_decision=decision)
+        )
+        updated = conn.execute(select(runs).where(runs.c.id == run_id)).mappings().one()
+    return Run.from_row(updated)
+
+
+def clear_run_decision(run_id: str) -> None:
+    """Clear a consumed resume decision (the worker, after resuming)."""
+    with get_engine().begin() as conn:
+        conn.execute(
+            update(runs).where(runs.c.id == run_id).values(pending_decision=None)
+        )
+
+
+def claim_next_resumable_run(*, now: datetime | None = None) -> Run | None:
+    """Atomically claim the oldest `awaiting_input` run that has a pending decision
+    (status awaiting_input -> running) and return it, or None. The worker half of the
+    web resume handoff — mirrors claim_next_pending_run. started_at is left as-is (it
+    was stamped on the run's first execution)."""
+    with get_engine().begin() as conn:
+        while True:
+            row = conn.execute(
+                select(runs.c.id)
+                .where(
+                    runs.c.status == "awaiting_input",
+                    runs.c.pending_decision.isnot(None),
+                )
+                .order_by(runs.c.created_at.asc())
+                .limit(1)
+            ).first()
+            if row is None:
+                return None
+            run_id = row[0]
+            claimed = conn.execute(
+                update(runs)
+                .where(runs.c.id == run_id, runs.c.status == "awaiting_input")
+                .values(status="running")
+            )
+            if claimed.rowcount == 1:
+                stored = (
+                    conn.execute(select(runs).where(runs.c.id == run_id))
+                    .mappings()
+                    .one()
+                )
+                return Run.from_row(stored)
+            # rowcount 0: lost the race — try the next resumable run.
 
 
 # --- Outputs --------------------------------------------------------------

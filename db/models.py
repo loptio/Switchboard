@@ -67,6 +67,10 @@ runs = Table(
     Column("started_at", _TS, nullable=True),  # set when status -> running
     Column("finished_at", _TS, nullable=True),  # set at a terminal state
     Column("error", Text, nullable=True),  # set on failure
+    # Phase 8 web human-in-the-loop: was the review gate requested for this run, and
+    # the web-written decision the worker consumes to resume an awaiting_input run.
+    Column("review", Boolean, nullable=True),
+    Column("pending_decision", _JSON, nullable=True),
     CheckConstraint(_in_list("status", RUN_STATUSES), name="ck_runs_status"),
     CheckConstraint(_in_list("trigger", RUN_TRIGGERS), name="ck_runs_trigger"),
 )

@@ -36,6 +36,8 @@ class Run:
     started_at: datetime | None
     finished_at: datetime | None
     error: str | None
+    review: bool = False  # Phase 8: human-review gate requested?
+    pending_decision: dict | None = None  # Phase 8: web-written resume decision
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> "Run":
@@ -48,6 +50,8 @@ class Run:
             started_at=_utc(row["started_at"]),
             finished_at=_utc(row["finished_at"]),
             error=row["error"],
+            review=bool(row["review"]),
+            pending_decision=row["pending_decision"],
         )
 
 

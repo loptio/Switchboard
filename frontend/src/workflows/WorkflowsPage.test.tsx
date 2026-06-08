@@ -72,7 +72,7 @@ describe("WorkflowsPage", () => {
     vi.mocked(triggerRun).mockResolvedValue({ id: "r1" } as Run);
     renderPage();
     await user.click(await screen.findByRole("button", { name: /run now/i }));
-    await waitFor(() => expect(triggerRun).toHaveBeenCalledWith("mine"));
+    await waitFor(() => expect(triggerRun).toHaveBeenCalledWith("mine", false));
   });
 
   it("clones a built-in (prompting for a new id)", async () => {

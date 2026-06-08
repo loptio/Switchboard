@@ -118,6 +118,17 @@ export interface Family {
   state: string;
 }
 
+// The human-review suspend payload (GET /runs/:id/review).
+export interface ReviewIssue {
+  index: number | null;
+  kind: string;
+  detail: string;
+}
+export interface ReviewPayload {
+  digest?: { items: { title: string; link: string; one_line_summary: string }[] };
+  issues?: ReviewIssue[];
+}
+
 export interface Manifest {
   node_kinds: Record<string, { requires: string[]; optional?: string[]; edge: string }>;
   node_handlers: string[];

@@ -5,13 +5,14 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { Markdown } from "../components/Markdown";
 import { Spinner } from "../components/Spinner";
 import { formatTime } from "../lib/format";
+import { ReviewPanel } from "./ReviewPanel";
 import { RunStatusBadge } from "./RunStatusBadge";
 import { useRun } from "./useRun";
 import styles from "./RunDetail.module.css";
 
 export function RunDetail() {
   const { id = "" } = useParams();
-  const { run, outputs, loading, error, notFound } = useRun(id);
+  const { run, outputs, review, loading, error, notFound, reload } = useRun(id);
 
   if (loading) {
     return (
@@ -70,17 +71,23 @@ export function RunDetail() {
 
       {run.error && <ErrorBanner message={run.error} />}
 
-      <h2 className={styles.outputTitle}>Output</h2>
-      {inProgress ? (
-        <div className={styles.pending}>
-          <Spinner label={`Run is ${run.status} — this view updates automatically…`} />
-        </div>
-      ) : digest ? (
-        <Card>
-          <Markdown>{digest.content}</Markdown>
-        </Card>
+      {run.status === "awaiting_input" ? (
+        <ReviewPanel runId={id} review={review} onResolved={() => void reload()} />
       ) : (
-        <div className={styles.empty}>No output was produced.</div>
+        <>
+          <h2 className={styles.outputTitle}>Output</h2>
+          {inProgress ? (
+            <div className={styles.pending}>
+              <Spinner label={`Run is ${run.status} — this view updates automatically…`} />
+            </div>
+          ) : digest ? (
+            <Card>
+              <Markdown>{digest.content}</Markdown>
+            </Card>
+          ) : (
+            <div className={styles.empty}>No output was produced.</div>
+          )}
+        </>
       )}
     </section>
   );

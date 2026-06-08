@@ -1,23 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError } from "../api/client";
-import { getRun, getRunOutput } from "../api/endpoints";
+import { getRun, getRunOutput, getRunReview } from "../api/endpoints";
 import { isTerminal } from "../api/types";
-import type { Output, Run } from "../api/types";
+import type { Output, ReviewPayload, Run } from "../api/types";
 import { pollConfig } from "./useRuns";
 
 export interface UseRun {
   run: Run | null;
   outputs: Output[];
+  review: ReviewPayload | null;
   loading: boolean;
   error: string | null;
   notFound: boolean;
+  reload: () => Promise<void>;
 }
 
 /** One run + its outputs, polling while the run is still non-terminal. */
 export function useRun(id: string): UseRun {
   const [run, setRun] = useState<Run | null>(null);
   const [outputs, setOutputs] = useState<Output[]>([]);
+  const [review, setReview] = useState<ReviewPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -40,6 +43,9 @@ export function useRun(id: string): UseRun {
       if (r.status === "success") {
         const outs = await getRunOutput(id);
         if (mounted.current) setOutputs(outs);
+      } else if (r.status === "awaiting_input") {
+        const rev = await getRunReview(id);
+        if (mounted.current) setReview(rev);
       }
     } catch (e) {
       if (!mounted.current) return;
@@ -74,5 +80,5 @@ export function useRun(id: string): UseRun {
     };
   }, [polling, load]);
 
-  return { run, outputs, loading, error, notFound };
+  return { run, outputs, review, loading, error, notFound, reload: load };
 }

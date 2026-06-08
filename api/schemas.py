@@ -33,6 +33,13 @@ class UserOut(BaseModel):
 class RunCreate(BaseModel):
     # Manual trigger payload — optional; defaults to the news workflow.
     workflow: str = "news"
+    review: bool = False  # Phase 8: request the human-review gate (digest family)
+
+
+class ResumeIn(BaseModel):
+    # Web human-in-the-loop decision for an awaiting_input run.
+    action: str  # "approve" | "redo"
+    feedback: str | None = None
 
 
 class RunOut(BaseModel):

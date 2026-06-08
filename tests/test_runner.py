@@ -125,11 +125,15 @@ def test_review_run_suspends_then_resume_approve_finalizes(database, tmp_path, m
         config=cfg, now=T0, checkpointer=saver,
         summarize_fn=_summarize_pass, verify_fn=_verify_pass,
     )
-    # suspended at the review gate: nothing finalized yet.
+    # suspended at the review gate: no DELIVERABLE output yet, but the review payload
+    # is persisted (type="review") so the web can render the candidate (Phase 8).
     assert run.status == "awaiting_input"
     assert outcome.status == "suspended"
     assert outcome.payload["digest"]["items"][0]["one_line_summary"] == "one"
-    assert db.list_outputs(run.id) == []
+    assert [o for o in db.list_outputs(run.id) if o.type != "review"] == []
+    reviews = [o for o in db.list_outputs(run.id) if o.type == "review"]
+    assert len(reviews) == 1
+    assert reviews[0].data["digest"]["items"][0]["one_line_summary"] == "one"
     assert sent == []
 
     run2, outcome2 = runner.resume_run(
@@ -138,7 +142,7 @@ def test_review_run_suspends_then_resume_approve_finalizes(database, tmp_path, m
     )
     assert outcome2.status == "completed"
     assert run2.status == "success"
-    outs = db.list_outputs(run.id)
+    outs = [o for o in db.list_outputs(run.id) if o.type != "review"]
     assert len(outs) == 1 and "one" in outs[0].content
     assert (tmp_path / "digest-2026-06-07.md").exists()  # local file written on finalize
     assert sent == [FAKE_DIGEST]  # emailed once, on finalize

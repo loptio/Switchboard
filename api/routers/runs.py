@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 import db
 from api.deps import get_current_user, require_csrf
-from api.schemas import OutputOut, RunCreate, RunOut
+from api.schemas import OutputOut, ResumeIn, RunCreate, RunOut
 
 router = APIRouter(
     prefix="/runs",
@@ -27,7 +27,8 @@ def trigger_run(body: RunCreate | None = None) -> db.Run:
     runs the agent here: it only records intent in the DB. See README "Phase 3".
     """
     workflow = body.workflow if body is not None else "news"
-    return db.create_run(workflow=workflow, trigger="manual")
+    review = body.review if body is not None else False
+    return db.create_run(workflow=workflow, trigger="manual", review=review)
 
 
 @router.get("", response_model=list[RunOut])
@@ -50,8 +51,36 @@ def get_run(run_id: str) -> db.Run:
 
 @router.get("/{run_id}/output", response_model=list[OutputOut])
 def get_run_output(run_id: str) -> list[db.Output]:
-    """A run's outputs (the rendered digest), oldest first. 404 if the run is
-    unknown; an empty list means the run exists but produced nothing yet."""
+    """A run's DELIVERABLE outputs (the rendered digest/brief), oldest first. 404 if
+    the run is unknown; an empty list means it produced nothing yet. The human-review
+    suspend payload (type="review") is excluded — it is state, not a product."""
     if db.get_run(run_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
-    return db.list_outputs(run_id)
+    return [o for o in db.list_outputs(run_id) if o.type != "review"]
+
+
+@router.get("/{run_id}/review")
+def get_run_review(run_id: str) -> dict:
+    """The latest human-review payload ({digest, issues}) for an awaiting_input run,
+    or {} if none. Persisted by the worker on suspend (a type="review" Output) since
+    the candidate lives only in the langgraph checkpoint, which the web can't read."""
+    if db.get_run(run_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+    reviews = [o for o in db.list_outputs(run_id) if o.type == "review"]
+    return reviews[-1].data or {} if reviews else {}
+
+
+@router.post("/{run_id}/resume", response_model=RunOut, status_code=status.HTTP_202_ACCEPTED)
+def resume_run(run_id: str, body: ResumeIn) -> db.Run:
+    """Approve / redo an awaiting_input run — the web RESUME handoff. Records the
+    decision; the worker claims it and resumes (the web never runs the agent). 404 if
+    the run is unknown, 409 unless it is awaiting_input."""
+    decision: dict = {"action": body.action}
+    if body.feedback:
+        decision["feedback"] = body.feedback
+    try:
+        return db.set_run_decision(run_id, decision)
+    except LookupError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc

@@ -121,8 +121,9 @@ def test_heartbeat_tick_runs_due_then_pending(monkeypatch):
     calls = []
     monkeypatch.setattr(scheduler, "run_due_schedules", lambda now: calls.append(("due", now)))
     monkeypatch.setattr(scheduler, "run_pending_runs", lambda now: calls.append(("pending", now)))
+    monkeypatch.setattr(scheduler, "run_resuming_runs", lambda now: calls.append(("resuming", now)))
 
     scheduler._tick()
 
-    assert [c[0] for c in calls] == ["due", "pending"]
-    assert calls[0][1] == calls[1][1]  # one `now` shared by both halves
+    assert [c[0] for c in calls] == ["due", "pending", "resuming"]
+    assert calls[0][1] == calls[1][1] == calls[2][1]  # one `now` shared by all halves

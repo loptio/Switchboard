@@ -78,10 +78,29 @@ def run_pending_runs(now: datetime) -> list[str]:
     return ran
 
 
+def run_resuming_runs(now: datetime) -> list[str]:
+    """Drain awaiting_input runs that have a web-written decision: claim one, resume
+    it, repeat until none remain. Returns the ids that resumed.
+
+    The worker half of the web human-in-the-loop resume handoff (Phase 8), mirroring
+    run_pending_runs: the web records the approve/redo decision (db.set_run_decision)
+    and the worker claims it atomically (db.claim_next_resumable_run) and resumes.
+    """
+    ran: list[str] = []
+    while True:
+        run = db.claim_next_resumable_run(now=now)
+        if run is None:
+            break
+        runner.resume_claimed_run(run, now=now)
+        ran.append(run.id)
+    return ran
+
+
 def _tick() -> None:
     now = _utc_now()
     run_due_schedules(now)  # scheduled workflows whose time has come
     run_pending_runs(now)  # manual triggers the web enqueued as pending runs
+    run_resuming_runs(now)  # web approve/redo decisions on awaiting_input runs
 
 
 def build_scheduler(scheduler: BlockingScheduler | None = None) -> BlockingScheduler:

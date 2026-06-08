@@ -5,6 +5,7 @@ import type {
   AgentDef,
   Manifest,
   Output,
+  ReviewPayload,
   Run,
   RunStatus,
   Schedule,
@@ -40,9 +41,20 @@ export const getRun = (id: string) => apiFetch<Run>(`/runs/${id}`);
 
 export const getRunOutput = (id: string) => apiFetch<Output[]>(`/runs/${id}/output`);
 
-/** Manual trigger — enqueues a pending run (202); the worker executes it. */
-export const triggerRun = (workflow?: string) =>
-  apiFetch<Run>("/runs", { method: "POST", body: workflow ? { workflow } : undefined });
+/** The human-review payload for an awaiting_input run (or {} if none). */
+export const getRunReview = (id: string) => apiFetch<ReviewPayload>(`/runs/${id}/review`);
+
+/** Manual trigger — enqueues a pending run (202); the worker executes it.
+ *  `review` requests the human-review gate (digest family). */
+export const triggerRun = (workflow?: string, review = false) =>
+  apiFetch<Run>("/runs", {
+    method: "POST",
+    body: workflow || review ? { workflow: workflow ?? "news", review } : undefined,
+  });
+
+/** Approve / redo an awaiting_input run — the web resume handoff. */
+export const resumeRun = (id: string, action: "approve" | "redo", feedback?: string) =>
+  apiFetch<Run>(`/runs/${id}/resume`, { method: "POST", body: { action, feedback } });
 
 // --- schedules ---
 export const listSchedules = () => apiFetch<Schedule[]>("/schedules");

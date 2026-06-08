@@ -17,11 +17,11 @@ export function WorkflowsPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const navigate = useNavigate();
 
-  async function run(defId: string) {
+  async function run(defId: string, review = false) {
     setMsg(null);
     setActionError(null);
     try {
-      const r = await triggerRun(defId);
+      const r = await triggerRun(defId, review);
       navigate(`/runs/${r.id}`);
     } catch (e) {
       setActionError(e instanceof ApiError ? e.detail : "Failed to run.");
@@ -86,6 +86,11 @@ export function WorkflowsPage() {
               </div>
               <div className={styles.actions}>
                 <Button onClick={() => void run(wf.def_id)}>Run now</Button>
+                {wf.definition.output_ref === "digest" && (
+                  <Button variant="secondary" onClick={() => void run(wf.def_id, true)}>
+                    Run (review)
+                  </Button>
+                )}
                 <Button variant="secondary" onClick={() => void clone(wf.def_id)}>
                   Clone
                 </Button>
