@@ -151,9 +151,10 @@
   - ✅ Unit 2 迁到 LangGraph 引擎(行为不变),已建·E2E 过·在 `phase5-langgraph` 已合并
   - ✅ Unit 3 人在环 suspend/resume 原语(引擎 + CLI),计划已审、已完成
 - ✅ **Phase 6** — 真实复杂任务工作流(多源采集+过滤 / 解读+反向思考 / 组装+E2E,约 2–3 unit)。证明多代理价值;给出第二个真实工作流供 Phase 7 归纳。
-- ⬜ **Phase 7** — 工作流与代理"数据化" + 通用编排器(代理即数据 / 工作流定义 schema + 读定义动态构图的通用编排器 / dogfood 重写两个工作流,约 3 unit)。兑现第 3 节。
+- ✅ **Phase 7** — 工作流与代理"数据化" + 通用编排器(代理即数据 / 工作流定义 schema + 读定义动态构图的通用编排器 / dogfood 重写两个工作流,约 3 unit)。兑现第 3 节。
 - ⬜ **Phase 8** — 网页合成器 + 监控 + 网页版人在环 + 工作区(监控+网页人在环 / 合成器 UI / 工作区选择+权限,约 2–3 unit)。
-- ⬜ **Phase 9** — Meta-agent(带护栏)—— 最后做(约 1–2 unit)。依赖 Phase 7,受益于 Phase 8。
+- ⬜ **Phase 9** — Meta-agent(带护栏)—— 9/10 先后到时再定(约 1–2 unit)。依赖 Phase 7,受益于 Phase 8。
+- ⬜ **Phase 10** — Coding-agent seam(**系统终点**):换 `llm.py(tools=[])` 缝为 Agent SDK / Managed Agents worker + 会话管理 + 沙箱 + 多 agent 对话(Agent Teams / Managed Agents)。正交于 8/9;coding(10) 与 meta-agent(9) 先后到时再定。计量计费 + 沙箱/worktree 安全为已知代价。
 - ⬜ **(小项,非 phase)Mac-as-server**:常驻服务 + 防休眠 + 可选 Tailscale,让"踢一脚走人、从手机看"落地。上云推迟。
 - (浏览器 / 社媒 agent:按需插入,先过 ToS 合规。)
 
@@ -205,3 +206,5 @@
 | 12 | 构建 vs 买 | 自造差异化、借用通用件 | 编排引擎用 LangGraph(通用、难、已解决的 plumbing);系统设计/契约/配置模型/合成器/meta-agent 自建(差异化 + 学习价值) |
 
 > 状态以代码 + 各阶段简报为准(本表只记"定了什么")。Phase 1–3 与 Phase 5 Unit 1 已落地;Unit 2 待合并、Unit 3 建造中。
+| 13 | 系统终点 | **Switchboard 里的 coding agent(Phase 10)** | 跑会用工具、管会话、能互相对话的 coding agent。实现=换 §5 的 `llm.py(tools=[])` 缝为 Agent SDK / Managed Agents worker + 会话管理 + 沙箱 + 多 agent 协调;激活已留好的 AgentDef.允许工具 + §6 的 Agent SDK 权限/工作区/沙箱。正交于 8/9(依赖 Phase 7 + run/worker 管道,不依赖合成器/meta-agent),放最后是风险排序(最大/最险/计量计费),非依赖 |
+| 14 | Phase 8 通用性约束 | 合成器与数据模型保持节点类型开放 | 将来加 `coding_agent` 节点类型是"加"不是"重写"(Phase 7 的 α 已支持);别写死"只有推理工作流"假设。Phase 8 的监控 + web 人在环为 coding agent 直接复用 |
