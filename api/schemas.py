@@ -34,6 +34,10 @@ class RunCreate(BaseModel):
     # Manual trigger payload — optional; defaults to the news workflow.
     workflow: str = "news"
     review: bool = False  # Phase 8: request the human-review gate (digest family)
+    # Phase 10b-1 per-run coding intake (coding workflow only); NULL falls back to
+    # Config (CODING_TASK / CODING_WORKSPACE) on the worker.
+    coding_task: str | None = None
+    coding_workspace: str | None = None
 
 
 class ResumeIn(BaseModel):

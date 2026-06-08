@@ -53,8 +53,11 @@ class _FakeSeam:
         )
 
 
-def _claim_and_run(cfg, seam):
-    db.create_run(workflow="coding", trigger="manual", now=T0)
+def _claim_and_run(cfg, seam, *, coding_task=None, coding_workspace=None):
+    db.create_run(
+        workflow="coding", trigger="manual",
+        coding_task=coding_task, coding_workspace=coding_workspace, now=T0,
+    )
     claimed = db.claim_next_pending_run(now=T0)
     runner.execute_claimed_run(claimed, config=cfg, now=T0, coding_fn=seam)
     return db.get_run(claimed.id)
@@ -113,6 +116,100 @@ def test_coding_run_seam_error_marks_failed(database, tmp_path):
     runner.execute_claimed_run(claimed, config=cfg, now=T0, coding_fn=boom)
     done = db.get_run(claimed.id)
     assert done.status == "failed" and "seam blew up" in (done.error or "")
+
+
+# --- Phase 10b-1: per-run task/workspace, with Config as the fallback -----------
+
+def test_coding_run_uses_per_run_task_over_config(database, tmp_path):
+    # A Run that carries its own task uses it, NOT the Config global.
+    cfg = _cfg(tmp_path, task="CONFIG TASK")
+    seam = _FakeSeam()
+    done = _claim_and_run(cfg, seam, coding_task="PER-RUN TASK")
+
+    assert done.status == "success"
+    coding = [o for o in db.list_outputs(done.id) if o.type == "coding"][0]
+    assert coding.data["task"] == "PER-RUN TASK"  # the per-run task is recorded
+    # the seam actually SAW the per-run task (it writes "# {task}" into the file)
+    assert "# PER-RUN TASK" in coding.data["diff"]
+
+
+def test_coding_run_uses_per_run_workspace_over_config(database, tmp_path):
+    # A Run that carries its own workspace runs the agent THERE, not in the Config dir.
+    cfg = _cfg(tmp_path)  # Config workspace = tmp_path/ws
+    seam = _FakeSeam()
+    other = tmp_path / "other_ws"
+    done = _claim_and_run(cfg, seam, coding_workspace=str(other))
+
+    assert done.status == "success"
+    assert (other / "hello.py").exists()  # wrote into the per-run workspace
+    assert not (tmp_path / "ws" / "hello.py").exists()  # NOT the Config one
+
+
+def test_coding_run_falls_back_to_config_when_run_unset(database, tmp_path):
+    # No per-run task/workspace on the Run -> the Config fallback (10a behaviour).
+    cfg = _cfg(tmp_path, task="FALLBACK TASK")
+    seam = _FakeSeam()
+    done = _claim_and_run(cfg, seam)  # create_run with NO coding fields
+
+    assert done.status == "success"
+    coding = [o for o in db.list_outputs(done.id) if o.type == "coding"][0]
+    assert coding.data["task"] == "FALLBACK TASK"
+    assert "# FALLBACK TASK" in coding.data["diff"]
+    assert (tmp_path / "ws" / "hello.py").exists()  # the Config workspace
+
+
+def test_coding_run_blank_per_run_task_falls_back_to_config(database, tmp_path):
+    # A whitespace-only per-run task is treated as unset -> Config fallback.
+    cfg = _cfg(tmp_path, task="FALLBACK TASK")
+    seam = _FakeSeam()
+    done = _claim_and_run(cfg, seam, coding_task="   ")
+
+    assert done.status == "success"
+    coding = [o for o in db.list_outputs(done.id) if o.type == "coding"][0]
+    assert coding.data["task"] == "FALLBACK TASK"
+
+
+# --- Phase 10b-1: git-aware diff + the clean-tree precondition ------------------
+
+def test_coding_run_in_a_git_workspace_uses_git_diff(database, tmp_path, git_repo):
+    # Pointed at a real git repo, the stored diff comes from GIT (not the snapshot).
+    cfg = _cfg(tmp_path)
+    seam = _FakeSeam()  # writes hello.py
+    done = _claim_and_run(cfg, seam, coding_workspace=str(git_repo))
+
+    assert done.status == "success"
+    coding = [o for o in db.list_outputs(done.id) if o.type == "coding"][0]
+    assert coding.data["changed_files"] == ["hello.py"]   # from git status
+    assert "diff --git" in coding.data["diff"]             # git-native format, not snapshot
+    assert "+def hello" in coding.data["diff"]
+    # the agent's change is real on disk and KEPT uncommitted (no auto-commit).
+    assert (git_repo / "hello.py").exists()
+    assert not workspace.git_is_clean(git_repo)
+
+
+def test_coding_run_non_git_workspace_keeps_snapshot_diff(database, tmp_path):
+    # A plain (non-git) workspace falls back to the 10a snapshot/difflib diff.
+    cfg = _cfg(tmp_path)
+    seam = _FakeSeam()
+    done = _claim_and_run(cfg, seam)  # cfg workspace = tmp_path/ws (not git)
+
+    coding = [o for o in db.list_outputs(done.id) if o.type == "coding"][0]
+    assert "+def hello" in coding.data["diff"]
+    assert "diff --git" not in coding.data["diff"]  # snapshot/difflib, NOT git (= 10a)
+
+
+def test_coding_run_refuses_a_dirty_git_workspace(database, tmp_path, git_repo):
+    # Precondition: a git workspace must start clean so restore-on-reject is safe and
+    # the diff is fully attributable. A dirty tree fails the run before the seam.
+    (git_repo / "wip.txt").write_text("uncommitted work\n", encoding="utf-8")
+    cfg = _cfg(tmp_path)
+    seam = _FakeSeam()
+    done = _claim_and_run(cfg, seam, coding_workspace=str(git_repo))
+
+    assert done.status == "failed"
+    assert "uncommitted changes" in (done.error or "")
+    assert seam.calls == 0  # never reached the seam
+    assert (git_repo / "wip.txt").exists()  # the user's work is untouched
 
 
 def test_run_once_dispatches_to_coding(database, tmp_path, monkeypatch):

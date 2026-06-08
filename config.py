@@ -26,10 +26,11 @@ DEFAULT_MODEL = "claude-opus-4-8"
 # perspective takes). Provenance (title/link/source/domain) is never translated.
 # Default Simplified Chinese; switch to e.g. "繁體中文" / "English" via OUTPUT_LANGUAGE.
 DEFAULT_LANGUAGE = "简体中文"
-# Coding family (Phase 10a) intake = a configured workspace directory + a task string
-# (blueprint decision F: a configured/temp dir, not a git clone). A coding run is
-# triggered with just a workflow id; the worker reads the task + workspace from here,
-# so no per-run schema change is needed. The agent is confined to this directory.
+# Coding family intake = a workspace directory + a task string. As of Phase 10b-1 a
+# coding run carries its OWN task + workspace (Run.coding_task / Run.coding_workspace,
+# fed per-run from the web/CLI); these Config values are the FALLBACK the worker uses
+# when a Run leaves them unset, preserving the 10a global-task behaviour. The agent is
+# confined to whichever directory is in effect.
 DEFAULT_CODING_WORKSPACE = "coding_workspace"
 
 

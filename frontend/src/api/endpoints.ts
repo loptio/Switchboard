@@ -44,12 +44,27 @@ export const getRunOutput = (id: string) => apiFetch<Output[]>(`/runs/${id}/outp
 /** The human-review payload for an awaiting_input run (or {} if none). */
 export const getRunReview = (id: string) => apiFetch<ReviewPayload>(`/runs/${id}/review`);
 
+/** Per-run coding intake (Phase 10b-1) — the task + workspace for a coding run. */
+export interface CodingTriggerFields {
+  coding_task?: string;
+  coding_workspace?: string;
+}
+
 /** Manual trigger — enqueues a pending run (202); the worker executes it.
- *  `review` requests the human-review gate (digest family). */
-export const triggerRun = (workflow?: string, review = false) =>
+ *  `review` requests the human-review gate (digest + coding families). `coding`
+ *  carries a coding run's per-run task/workspace (omitted => the worker's Config
+ *  fallback). */
+export const triggerRun = (
+  workflow?: string,
+  review = false,
+  coding?: CodingTriggerFields,
+) =>
   apiFetch<Run>("/runs", {
     method: "POST",
-    body: workflow || review ? { workflow: workflow ?? "news", review } : undefined,
+    body:
+      workflow || review || coding
+        ? { workflow: workflow ?? "news", review, ...(coding ?? {}) }
+        : undefined,
   });
 
 /** Approve / redo an awaiting_input run — the web resume handoff. */

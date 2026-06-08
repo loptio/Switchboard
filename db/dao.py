@@ -78,12 +78,18 @@ def create_run(
     trigger: str = "manual",
     *,
     review: bool = False,
+    coding_task: str | None = None,
+    coding_workspace: str | None = None,
     now: datetime | None = None,
 ) -> Run:
     """Insert a new Run in the `pending` state and return it.
 
     `review` (Phase 8): request the human-review gate — the worker drives the
     interruptible path for this run (digest family only) instead of straight-through.
+
+    `coding_task` / `coding_workspace` (Phase 10b-1): the per-run intake for a coding
+    run. NULL leaves the worker to fall back to Config (CODING_TASK / CODING_WORKSPACE),
+    preserving 10a behaviour; ignored by non-coding workflows.
     """
     if trigger not in RUN_TRIGGERS:
         raise ValueError(f"trigger must be one of {RUN_TRIGGERS}, got {trigger!r}")
@@ -98,6 +104,8 @@ def create_run(
                 trigger=trigger,
                 created_at=created,
                 review=review,
+                coding_task=coding_task,
+                coding_workspace=coding_workspace,
             )
         )
     return Run(
@@ -110,6 +118,8 @@ def create_run(
         finished_at=None,
         error=None,
         review=review,
+        coding_task=coding_task,
+        coding_workspace=coding_workspace,
     )
 
 

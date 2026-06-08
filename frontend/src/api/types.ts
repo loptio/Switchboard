@@ -131,6 +131,7 @@ export interface CodingReviewPayload {
   diff: string;
   changed_files: string[];
   status: string; // "completed" | "stopped_limit" | "failed"
+  task?: string; // Phase 10b-1: the per-run task this coding run was given
 }
 export interface ReviewPayload {
   digest?: { items: { title: string; link: string; one_line_summary: string }[] };

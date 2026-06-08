@@ -28,7 +28,15 @@ def trigger_run(body: RunCreate | None = None) -> db.Run:
     """
     workflow = body.workflow if body is not None else "news"
     review = body.review if body is not None else False
-    return db.create_run(workflow=workflow, trigger="manual", review=review)
+    coding_task = body.coding_task if body is not None else None
+    coding_workspace = body.coding_workspace if body is not None else None
+    return db.create_run(
+        workflow=workflow,
+        trigger="manual",
+        review=review,
+        coding_task=coding_task,
+        coding_workspace=coding_workspace,
+    )
 
 
 @router.get("", response_model=list[RunOut])

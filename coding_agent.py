@@ -119,7 +119,10 @@ def _make_permission_cb(root: Path, tools: tuple[str, ...], max_tool_calls: int,
     Denies (in order, so a path escape never consumes the call budget):
       1. any tool not in the workspace whitelist (e.g. Bash),
       2. any path argument that escapes the workspace (workspace.confine),
-      3. any call once the tool-call cap is exceeded (interrupt=True → hard stop).
+      3. any path inside the repo's `.git` (Phase 10b-1: the agent edits a REAL repo —
+         git internals are off-limits; a scribble there is invisible to `git diff` and
+         can corrupt the repo),
+      4. any call once the tool-call cap is exceeded (interrupt=True → hard stop).
 
     `counter` is shared with the run so the cap survives across calls. Pure w.r.t. the
     SDK (no network); unit-tested offline by calling it directly.
@@ -131,9 +134,15 @@ def _make_permission_cb(root: Path, tools: tuple[str, ...], max_tool_calls: int,
             return PermissionResultDeny(message=f"tool {tool_name!r} is not allowed in this workspace")
         for key in _FILE_PATH_KEYS:
             value = tool_input.get(key)
-            if value and not workspace.confine(root, value):
+            if not value:
+                continue
+            if not workspace.confine(root, value):
                 return PermissionResultDeny(
                     message=f"path {value!r} escapes the workspace", interrupt=True
+                )
+            if workspace.in_git_dir(root, value):
+                return PermissionResultDeny(
+                    message=f"path {value!r} is inside the repo's .git directory", interrupt=True
                 )
         counter["n"] = counter.get("n", 0) + 1
         if counter["n"] > max_tool_calls:

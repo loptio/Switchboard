@@ -81,7 +81,29 @@ describe("RunsDashboard", () => {
     await user.click(screen.getByRole("checkbox", { name: /review/i }));
     await user.click(screen.getByRole("button", { name: /run now/i }));
 
-    await waitFor(() => expect(triggerRun).toHaveBeenCalledWith("coding", true));
+    // No per-run task/workspace typed -> coding fields omitted (Config fallback).
+    await waitFor(() => expect(triggerRun).toHaveBeenCalledWith("coding", true, undefined));
+  });
+
+  it("sends the per-run task + workspace for a coding run (Phase 10b-1)", async () => {
+    const user = userEvent.setup();
+    vi.mocked(listRuns).mockResolvedValue([]);
+    vi.mocked(triggerRun).mockResolvedValue(makeRun({ id: "c2", workflow: "coding" }));
+
+    renderDashboard();
+    await screen.findByText(/no runs yet/i);
+    // The task/workspace fields appear only once the coding workflow is selected.
+    await user.type(screen.getByLabelText(/workflow to run/i), "coding");
+    await user.type(screen.getByLabelText(/coding task/i), "add a hello module");
+    await user.type(screen.getByLabelText(/coding workspace/i), "/repos/proj");
+    await user.click(screen.getByRole("button", { name: /run now/i }));
+
+    await waitFor(() =>
+      expect(triggerRun).toHaveBeenCalledWith("coding", false, {
+        coding_task: "add a hello module",
+        coding_workspace: "/repos/proj",
+      }),
+    );
   });
 
   it("polls until a pending run reaches success", async () => {

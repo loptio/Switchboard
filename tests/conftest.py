@@ -5,10 +5,42 @@ needs no running service and stays deterministic. Set TEST_DATABASE_URL to a
 throwaway PostgreSQL database to run the very same tests against real Postgres.
 """
 
+import subprocess
+
 import pytest
 
 import db
 from db import settings
+
+
+@pytest.fixture
+def git_repo(tmp_path, monkeypatch):
+    """A hermetic temp git repo with one commit (Phase 10b-1 git-aware coding tests).
+
+    Offline + deterministic: no SDK, no network, no spend — just local git. Global and
+    system git config are neutralised and the commit identity is pinned via env, so the
+    repo behaves identically regardless of the developer's machine. The SAME env is
+    inherited by the worker's git calls (workspace.git_diff / git_restore / is_git_repo)
+    since they run in this process. Returns the repo root Path.
+    """
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-global-gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(tmp_path / "no-system-gitconfig"))
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Test")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "test@example.com")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Test")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "test@example.com")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(repo), *args], check=True,
+                       capture_output=True, text=True)
+
+    git("init", "-q", "-b", "main")
+    (repo / "README.md").write_text("# repo\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-q", "-m", "init")
+    return repo
 
 
 @pytest.fixture

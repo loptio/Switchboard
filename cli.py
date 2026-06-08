@@ -80,7 +80,12 @@ def _run_once(args: argparse.Namespace) -> int:
             return 1
         run, outcome = runner.run_review_once()
         return _report_review(run, outcome)
-    run = runner.run_once(trigger="manual", workflow=args.workflow)
+    run = runner.run_once(
+        trigger="manual",
+        workflow=args.workflow,
+        coding_task=getattr(args, "task", None),
+        coding_workspace=getattr(args, "workspace", None),
+    )
     print(f"run {run.id}: {run.status}")
     if run.status == "failed":
         print(f"error: {run.error}", file=sys.stderr)
@@ -185,12 +190,23 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["digest", "brief", "news", "coding"],
         default="digest",
         help="which workflow to run (default digest; 'news' is the legacy digest alias; "
-        "'coding' needs CODING_TASK + CODING_WORKSPACE env)",
+        "'coding' takes --task + --workspace, else CODING_TASK + CODING_WORKSPACE env)",
     )
     ro.add_argument(
         "--review",
         action="store_true",
         help="human-in-the-loop: pause for approval before finishing (digest only)",
+    )
+    ro.add_argument(
+        "--task",
+        default=None,
+        help="coding workflow: the task for THIS run (overrides CODING_TASK)",
+    )
+    ro.add_argument(
+        "--workspace",
+        default=None,
+        help="coding workflow: the workspace (a git repo) for THIS run "
+        "(overrides CODING_WORKSPACE)",
     )
     ro.set_defaults(func=_run_once)
 

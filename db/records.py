@@ -38,6 +38,10 @@ class Run:
     error: str | None
     review: bool = False  # Phase 8: human-review gate requested?
     pending_decision: dict | None = None  # Phase 8: web-written resume decision
+    # Phase 10b-1: per-run coding intake. NULL => the worker falls back to Config
+    # (CODING_TASK / CODING_WORKSPACE), preserving 10a's global-task behaviour.
+    coding_task: str | None = None
+    coding_workspace: str | None = None
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> "Run":
@@ -52,6 +56,8 @@ class Run:
             error=row["error"],
             review=bool(row["review"]),
             pending_decision=row["pending_decision"],
+            coding_task=row["coding_task"],
+            coding_workspace=row["coding_workspace"],
         )
 
 

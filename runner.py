@@ -39,6 +39,7 @@ import components
 import db
 import defs_resolve
 import workflows
+import workspace
 from agent import Digest, summarize_agent, verify_agent
 from brief_agent import Brief, perspective_agent, summarize_item_agent
 from brief_orchestrator import build_brief
@@ -222,10 +223,31 @@ def _run_brief_pipeline(
     return _finalize_brief(run, brief, cfg, now)
 
 
-def _coding_to_data(result: CodingResult) -> dict:
+def _coding_to_data(result: CodingResult, task: str) -> dict:
     """Structured form of the coding result for the Output.data (JSONB) column — the
-    web-facing contract (summary + diff + changed_files + status)."""
-    return asdict(result)
+    web-facing contract (summary + diff + changed_files + status) plus the per-run task
+    (Phase 10b-1) so the web run/review view can show what this run was asked to do."""
+    return {**asdict(result), "task": task}
+
+
+def _coding_inputs(run: db.Run, cfg: Config) -> tuple[str, str]:
+    """Resolve the per-run coding task + workspace (Phase 10b-1): the Run's values when
+    set, else the Config fallback (CODING_TASK / CODING_WORKSPACE), preserving 10a's
+    global-task behaviour. Returns (task, workspace_dir)."""
+    task = (run.coding_task or "").strip() or cfg.coding_task
+    workspace_dir = run.coding_workspace or str(cfg.coding_workspace)
+    return task, workspace_dir
+
+
+def _coding_precondition_error(workspace_dir: str) -> str | None:
+    """Refuse a coding run whose GIT workspace starts dirty (Phase 10b-1): the blanket
+    restore-on-reject (git checkout + clean) is only safe — and the diff only cleanly
+    attributable to the agent — if the tree is clean to begin with. Returns the error
+    string to fail the run with, or None to proceed. A non-git workspace is
+    unconstrained (10a snapshot behaviour)."""
+    if workspace.is_git_repo(workspace_dir) and not workspace.git_is_clean(workspace_dir):
+        return "coding workspace has uncommitted changes — commit or stash first"
+    return None
 
 
 def _coding_bounds(wf) -> dict:
@@ -246,9 +268,10 @@ def _finalize_coding(run: db.Run, result: CodingResult, cfg: Config, now: dateti
     Never raises."""
     try:
         day = now.date() if now is not None else date.today()
+        task, _ = _coding_inputs(run, cfg)
         markdown = render_coding_markdown(result)
         write_coding(markdown, cfg.output_dir, day)
-        db.save_output(run.id, markdown, type="coding", data=_coding_to_data(result), now=now)
+        db.save_output(run.id, markdown, type="coding", data=_coding_to_data(result, task), now=now)
     except Exception as exc:
         log.exception("run %s failed during finalize", run.id)
         return db.mark_failed(run.id, str(exc), now=now)
@@ -265,20 +288,24 @@ def _run_coding_pipeline(
     run: db.Run, cfg: Config, now: datetime | None, *, wf, wf_arg, coding_fn=None
 ) -> db.Run:
     try:
-        task = cfg.coding_task
+        # Per-run task/workspace (Phase 10b-1): the Run's values, else the Config
+        # fallback (preserving 10a). A coding run with neither is a no-op.
+        task, workspace_dir = _coding_inputs(run, cfg)
         if not task.strip():
             return db.mark_failed(
-                run.id, "coding run has no task (set CODING_TASK)", now=now
+                run.id, "coding run has no task (set --task or CODING_TASK)", now=now
             )
-        workspace = str(cfg.coding_workspace)
+        precondition = _coding_precondition_error(workspace_dir)
+        if precondition is not None:
+            return db.mark_failed(run.id, precondition, now=now)
         # The seam (coding_agent.run_coding_agent) is the only Agent SDK caller; it is
-        # confined to `workspace` and bounded by the WorkflowDef caps. wf_arg=None => the
-        # prebuilt module graph (coding is never web-synthesized). `coding_fn` is
+        # confined to `workspace_dir` and bounded by the WorkflowDef caps. wf_arg=None =>
+        # the prebuilt module graph (coding is never web-synthesized). `coding_fn` is
         # injectable for offline tests (a deterministic fake — no SDK); None => the real
         # seam (build_coding's default).
         extra = {"coding_fn": coding_fn} if coding_fn is not None else {}
         result = build_coding(
-            task, workspace, model=cfg.model, wf=wf_arg, **_coding_bounds(wf), **extra
+            task, workspace_dir, model=cfg.model, wf=wf_arg, **_coding_bounds(wf), **extra
         )
     except Exception as exc:
         log.exception("run %s failed", run.id)
@@ -321,6 +348,8 @@ def run_once(
     *,
     trigger: str = "manual",
     workflow: str = "news",
+    coding_task: str | None = None,
+    coding_workspace: str | None = None,
     config: Config | None = None,
     now: datetime | None = None,
 ) -> db.Run:
@@ -328,10 +357,14 @@ def run_once(
 
     The CLI and scheduler path: create the Run, mark it running, run the pipeline.
     Pipeline failures are recorded (status=failed) and returned, not raised.
-    `config`/`now` are injectable for deterministic, offline tests.
+    `coding_task`/`coding_workspace` (Phase 10b-1) ride on the Run for a coding run;
+    NULL falls back to Config. `config`/`now` are injectable for offline tests.
     """
     cfg = config or load_config()
-    run = db.create_run(workflow=workflow, trigger=trigger, now=now)
+    run = db.create_run(
+        workflow=workflow, trigger=trigger,
+        coding_task=coding_task, coding_workspace=coding_workspace, now=now,
+    )
     db.mark_running(run.id, now=now)
     log.info("run %s started (trigger=%s)", run.id, trigger)
     return _run_pipeline(run, cfg, now)
@@ -586,10 +619,12 @@ def _run_coding_review_claimed(
     """Start an interruptible CODING review run the worker claimed (U2): run one bounded
     coding loop, then suspend at the diff-review gate (awaiting_input, the diff payload
     persisted) or finalize. Mirrors _run_review_claimed for the coding family."""
-    task = cfg.coding_task
+    task, workspace_dir = _coding_inputs(run, cfg)
     if not task.strip():
-        return db.mark_failed(run.id, "coding run has no task (set CODING_TASK)", now=now)
-    workspace_dir = str(cfg.coding_workspace)
+        return db.mark_failed(run.id, "coding run has no task (set --task or CODING_TASK)", now=now)
+    precondition = _coding_precondition_error(workspace_dir)
+    if precondition is not None:
+        return db.mark_failed(run.id, precondition, now=now)
     extra = {"coding_fn": coding_fn} if coding_fn is not None else {}
     try:
         with _checkpointer_cm(checkpointer) as cp:

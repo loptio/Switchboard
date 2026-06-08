@@ -56,6 +56,24 @@ class _FakeSeam:
         )
 
 
+class _AccumulatingSeam:
+    """Writes a DIFFERENT file each call (file1.py, file2.py, …) and lets the graph
+    compute the git diff. With restore-on-redo the tree is clean before each call, so
+    only the latest file survives; WITHOUT restore the files would accumulate — the
+    discriminator the redo-restore test asserts on."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, task, workspace_dir, *, model, max_turns, max_tool_calls,
+                 max_budget_usd, feedback=None, **kw):
+        self.calls += 1
+        name = f"file{self.calls}.py"
+        (Path(workspace_dir) / name).write_text(f"# {name}\nx = {self.calls}\n", encoding="utf-8")
+        # diff/changed_files left empty: the git workspace path overrides them in the node.
+        return CodingResult(summary=name, diff="", changed_files=[], status="completed")
+
+
 def _saver():
     from langgraph.checkpoint.memory import InMemorySaver
 
@@ -135,6 +153,54 @@ def test_coding_review_stopped_limit_routes_to_review_not_failure(database, tmp_
     assert suspended.status == "awaiting_input"  # not failed
     reviews = [o for o in db.list_outputs(claimed.id) if o.type == "review"]
     assert reviews[-1].data["coding"]["status"] == "stopped_limit"
+
+
+# --- Phase 10b-1: git-aware review (git diff in the payload + restore on redo) ---
+
+def test_coding_review_uses_git_diff_in_payload(database, tmp_path, git_repo):
+    cfg = _cfg(tmp_path)
+    seam = _FakeSeam()  # writes hello.py
+    saver = _saver()
+    db.create_run(workflow="coding", trigger="manual", review=True,
+                  coding_workspace=str(git_repo), now=T0)
+    claimed = db.claim_next_pending_run(now=T0)
+    runner.execute_claimed_run(claimed, config=cfg, now=T0, checkpointer=saver, coding_fn=seam)
+
+    assert db.get_run(claimed.id).status == "awaiting_input"
+    payload = [o for o in db.list_outputs(claimed.id) if o.type == "review"][-1].data["coding"]
+    assert payload["changed_files"] == ["hello.py"]
+    assert "diff --git" in payload["diff"]   # the review diff is git-native
+    assert payload["task"] == "add a hello module"  # per-run task surfaced (Phase 10b-1)
+
+
+def test_coding_review_redo_restores_the_git_workspace(database, tmp_path, git_repo):
+    # The discriminator for restore-on-reject: an accumulating seam writes file1.py then
+    # file2.py. WITH restore, file1.py is reverted before the redo, so only file2.py
+    # remains and the second diff is file2.py alone (not [file1, file2]).
+    cfg = _cfg(tmp_path)
+    seam = _AccumulatingSeam()
+    saver = _saver()
+    db.create_run(workflow="coding", trigger="manual", review=True,
+                  coding_workspace=str(git_repo), now=T0)
+    claimed = db.claim_next_pending_run(now=T0)
+    runner.execute_claimed_run(claimed, config=cfg, now=T0, checkpointer=saver, coding_fn=seam)
+
+    first = [o for o in db.list_outputs(claimed.id) if o.type == "review"][-1].data["coding"]
+    assert first["changed_files"] == ["file1.py"]
+    assert (git_repo / "file1.py").exists()
+
+    db.set_run_decision(claimed.id, {"action": "redo", "feedback": "try again"})
+    resumable = db.claim_next_resumable_run(now=T0)
+    runner.resume_claimed_run(resumable, config=cfg, now=T0, checkpointer=saver, coding_fn=seam)
+
+    again = db.get_run(claimed.id)
+    assert again.status == "awaiting_input"
+    assert seam.calls == 2
+    # restore worked: file1.py was reverted before the redo; only file2.py remains.
+    assert not (git_repo / "file1.py").exists()
+    assert (git_repo / "file2.py").exists()
+    second = [o for o in db.list_outputs(claimed.id) if o.type == "review"][-1].data["coding"]
+    assert second["changed_files"] == ["file2.py"]
 
 
 # --- web side: the generic review endpoint round-trips the coding payload ----

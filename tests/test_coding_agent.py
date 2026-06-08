@@ -95,6 +95,20 @@ def test_permission_denies_path_escape(tmp_path):
         assert res.interrupt is True  # a path escape hard-stops the loop
 
 
+def test_permission_denies_writes_into_dot_git(tmp_path):
+    # Phase 10b-1: the agent edits a REAL repo; git internals are off-limits.
+    (tmp_path / ".git" / "hooks").mkdir(parents=True)
+    cb = C._make_permission_cb(tmp_path, ("Read", "Write", "Edit"), 40, {"n": 0})
+    for bad in (".git/config", str(tmp_path / ".git" / "hooks" / "evil"), ".git"):
+        res = _decide(cb, "Write", {"file_path": bad})
+        assert isinstance(res, PermissionResultDeny), bad
+        assert res.interrupt is True  # a .git write hard-stops the loop
+    # a normal in-workspace file is still allowed
+    assert isinstance(
+        _decide(cb, "Write", {"file_path": str(tmp_path / "src.py")}), PermissionResultAllow
+    )
+
+
 def test_permission_path_escape_does_not_consume_the_call_budget(tmp_path):
     # order matters: a denied-for-escape call must not eat the tool-call budget.
     counter = {"n": 0}

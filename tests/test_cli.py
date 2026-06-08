@@ -53,6 +53,30 @@ def test_run_once_workflow_brief_dispatches(monkeypatch):
     assert seen["workflow"] == "brief"
 
 
+def test_run_once_coding_passes_task_and_workspace(monkeypatch):
+    # Phase 10b-1: --task / --workspace ride through run_once onto the Run.
+    seen = {}
+    monkeypatch.setattr(runner, "run_once", lambda **kw: seen.update(kw) or _run(workflow="coding"))
+    monkeypatch.setattr(db, "list_outputs", lambda run_id: [])
+
+    rc = cli.main(["run-once", "--workflow", "coding",
+                   "--task", "add a hello module", "--workspace", "/repos/proj"])
+    assert rc == 0
+    assert seen["workflow"] == "coding"
+    assert seen["coding_task"] == "add a hello module"
+    assert seen["coding_workspace"] == "/repos/proj"
+
+
+def test_run_once_without_coding_flags_passes_none(monkeypatch):
+    # No --task/--workspace -> None reaches run_once (worker uses the Config fallback).
+    seen = {}
+    monkeypatch.setattr(runner, "run_once", lambda **kw: seen.update(kw) or _run())
+    monkeypatch.setattr(db, "list_outputs", lambda run_id: [])
+
+    cli.main(["run-once"])
+    assert seen["coding_task"] is None and seen["coding_workspace"] is None
+
+
 def test_run_once_brief_with_review_is_rejected(monkeypatch, capsys):
     called = []
     monkeypatch.setattr(runner, "run_review_once", lambda **kw: called.append(True) or (_run(), None))

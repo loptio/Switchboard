@@ -32,6 +32,28 @@
   color: var(--color-text-muted);
 }
 
+/* Per-run coding intake (Phase 10b-1): task + workspace, shown only for the coding
+   workflow. A second row below the toolbar so the inline controls stay uncrowded. */
+.codingFields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+.codingTask,
+.codingWorkspace {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+}
+.codingTask {
+  min-height: 3rem;
+  resize: vertical;
+}
+
 .hint {
   background: var(--status-pending-bg);
   color: var(--status-pending);

@@ -21,6 +21,11 @@ function CodingDiff({ coding }: { coding: CodingReviewPayload }) {
           partial work. Review the diff before approving.
         </p>
       )}
+      {coding.task && (
+        <p>
+          <strong>Task:</strong> {coding.task}
+        </p>
+      )}
       <p>{coding.summary || "(no summary)"}</p>
       <strong>Changed files</strong>
       {coding.changed_files.length > 0 ? (

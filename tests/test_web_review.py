@@ -60,6 +60,33 @@ def test_post_runs_review_flag_enqueues_review_run(client, user):
     assert stored.review is True and stored.status == "pending"
 
 
+def test_post_runs_persists_per_run_coding_task_and_workspace(client, user):
+    # Phase 10b-1: the trigger payload carries a coding run's task + workspace.
+    login(client)
+    r = client.post(
+        "/runs",
+        json={
+            "workflow": "coding", "review": True,
+            "coding_task": "add a hello module", "coding_workspace": "/repos/proj",
+        },
+        headers=csrf_headers(client),
+    )
+    assert r.status_code == 202
+    stored = db.get_run(r.json()["id"])
+    assert stored.coding_task == "add a hello module"
+    assert stored.coding_workspace == "/repos/proj"
+    assert stored.review is True
+
+
+def test_post_runs_without_coding_fields_leaves_them_null(client, user):
+    # Back-compat: a plain trigger leaves the per-run coding columns NULL (Config fallback).
+    login(client)
+    r = client.post("/runs", json={"workflow": "news"}, headers=csrf_headers(client))
+    assert r.status_code == 202
+    stored = db.get_run(r.json()["id"])
+    assert stored.coding_task is None and stored.coding_workspace is None
+
+
 def test_resume_requires_login(client):
     assert client.post("/runs/x/resume", json={"action": "approve"}).status_code == 401
 

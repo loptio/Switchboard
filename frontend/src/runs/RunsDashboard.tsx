@@ -20,12 +20,24 @@ export function RunsDashboard() {
   // run with diff review end-to-end from the web.
   const [workflow, setWorkflow] = useState("");
   const [review, setReview] = useState(false);
+  // Per-run coding intake (Phase 10b-1): a coding run carries its own task + workspace
+  // (a real git repo). Shown only when the coding workflow is selected; blank fields
+  // fall back to the worker's Config (CODING_TASK / CODING_WORKSPACE).
+  const [codingTask, setCodingTask] = useState("");
+  const [codingWorkspace, setCodingWorkspace] = useState("");
+  const isCoding = workflow.trim() === "coding";
 
   async function onRunNow() {
     setTriggering(true);
     setTriggerError(null);
     try {
-      const run = await triggerRun(workflow.trim() || undefined, review);
+      const task = codingTask.trim();
+      const ws = codingWorkspace.trim();
+      const coding =
+        isCoding && (task || ws)
+          ? { coding_task: task || undefined, coding_workspace: ws || undefined }
+          : undefined;
+      const run = await triggerRun(workflow.trim() || undefined, review, coding);
       addOptimistic(run); // show it immediately; polling will track status
     } catch (e) {
       setTriggerError(e instanceof ApiError ? e.detail : "Failed to trigger a run.");
@@ -62,6 +74,25 @@ export function RunsDashboard() {
           </Button>
         </div>
       </div>
+
+      {isCoding && (
+        <div className={styles.codingFields}>
+          <textarea
+            aria-label="Coding task"
+            placeholder="coding task for this run (blank = CODING_TASK env)"
+            value={codingTask}
+            onChange={(e) => setCodingTask(e.target.value)}
+            className={styles.codingTask}
+          />
+          <input
+            aria-label="Coding workspace"
+            placeholder="workspace path — a git repo (blank = CODING_WORKSPACE env)"
+            value={codingWorkspace}
+            onChange={(e) => setCodingWorkspace(e.target.value)}
+            className={styles.codingWorkspace}
+          />
+        </div>
+      )}
 
       {triggerError && <ErrorBanner message={triggerError} />}
       {error && <ErrorBanner message={error} />}

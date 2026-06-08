@@ -31,6 +31,7 @@ from typing import TypedDict
 from langgraph.types import Command, interrupt
 
 import engine
+import workspace
 from coding_agent import CodingResult, run_coding_agent
 from workflows import CODING_DEF, WorkflowDef
 
@@ -91,8 +92,16 @@ def _coding_node(state: _State, config) -> dict:
         feedback=state.get("feedback"),
     )
     log.info("coding node produced status=%s", getattr(result, "status", "?"))
+    rd = _result_to_dict(result)
+    # git-aware diff (Phase 10b-1): when the workspace IS a git repo, the authoritative
+    # diff + changed files come from git (real, .gitignore-aware); a non-git workspace
+    # keeps the seam's snapshot diff (10a). Computed HERE (not in the faked seam) so it
+    # rides every path — incl. the offline fake — and is in the review payload below.
+    if rd.get("status") in ("completed", "stopped_limit") and workspace.is_git_repo(state["workspace"]):
+        diff, changed = workspace.git_diff(state["workspace"])
+        rd = {**rd, "diff": diff, "changed_files": changed}
     # Clear feedback once consumed so a later auto-step doesn't re-apply it.
-    return {"result": _result_to_dict(result), "feedback": None}
+    return {"result": rd, "feedback": None}
 
 
 def _finalize_gate_node(state: _State) -> dict:
@@ -107,15 +116,20 @@ def _human_review_node(state: _State) -> dict:
     PURE before interrupt(): build the review payload from state only (LangGraph
     re-runs this node from the top on resume, so nothing before interrupt() may have
     side effects). The payload carries the CodingResult (summary + diff + changed_files
-    + status), the same shape the web RunDetail renders.
+    + status) plus the per-run `task` (Phase 10b-1), the same shape the web RunDetail
+    renders.
     """
-    payload = {"coding": state["result"] or {}}
+    payload = {"coding": {**(state["result"] or {}), "task": state.get("task", "")}}
     decision = interrupt(payload)
     # --- resumed via Command(resume=decision) ---
     action = decision.get("action") if isinstance(decision, dict) else decision
     if action == "approve":
         return {"approved": True}
-    # redo: re-run a fresh bounded coding loop carrying the human's feedback.
+    # redo: a git workspace is RESTORED to its committed state first (Phase 10b-1), so
+    # the re-run starts clean and its diff is the new attempt's alone; a non-git
+    # workspace re-runs in place (10a). Then re-run a fresh bounded loop with feedback.
+    if workspace.is_git_repo(state["workspace"]):
+        workspace.git_restore(state["workspace"])
     text = decision.get("feedback") if isinstance(decision, dict) else None
     return {"approved": False, "result": None, "feedback": text}
 

@@ -59,6 +59,91 @@ def test_confine_rejects_symlink_escape(tmp_path):
     assert not workspace.confine(ws, ws / "escape")
 
 
+def test_confine_allows_a_symlinked_workspace_root(tmp_path):
+    # The workspace ROOT is itself a symlink (e.g. /tmp -> /private/tmp on macOS, or a
+    # repo reached via a symlink). confine resolves BOTH root and candidate, so writes
+    # INSIDE the symlinked root are confined=True, while escapes are still rejected.
+    # This pins the "softlink root" guarantee the git-aware paths build on.
+    real = tmp_path / "real_repo"
+    real.mkdir()
+    link = tmp_path / "link_root"
+    link.symlink_to(real)
+    assert workspace.confine(link, link / "a.txt")   # inside the symlinked root
+    assert workspace.confine(link, "a.txt")          # relative -> inside
+    assert workspace.confine(link, real / "a.txt")   # the resolved real path is inside too
+    # adversarial: an escape THROUGH the symlinked root is still rejected
+    assert not workspace.confine(link, link / ".." / "escape.txt")
+    assert not workspace.confine(link, "/etc/passwd")
+
+
+def test_in_git_dir_detects_git_internals(tmp_path):
+    root = tmp_path / "repo"
+    (root / ".git" / "hooks").mkdir(parents=True)
+    (root / "src").mkdir()
+    assert workspace.in_git_dir(root, ".git/config")
+    assert workspace.in_git_dir(root, root / ".git")
+    assert workspace.in_git_dir(root, root / ".git" / "hooks" / "x")
+    assert not workspace.in_git_dir(root, "src/main.py")
+    assert not workspace.in_git_dir(root, root / "README.md")
+
+
+# --- git-aware diff + restore (Phase 10b-1) --------------------------------
+
+def test_is_git_repo_true_for_a_repo_false_otherwise(tmp_path, git_repo):
+    assert workspace.is_git_repo(git_repo) is True
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert workspace.is_git_repo(plain) is False           # a non-git dir
+    assert workspace.is_git_repo(tmp_path / "missing") is False  # a missing dir
+
+
+def test_git_is_clean_then_dirty(git_repo):
+    assert workspace.git_is_clean(git_repo) is True
+    (git_repo / "new.py").write_text("x = 1\n", encoding="utf-8")
+    assert workspace.git_is_clean(git_repo) is False
+
+
+def test_git_diff_includes_new_modified_and_is_git_native(git_repo):
+    (git_repo / "new.py").write_text("def f():\n    return 1\n", encoding="utf-8")  # untracked
+    (git_repo / "README.md").write_text("# repo\nmore\n", encoding="utf-8")  # modify tracked
+    diff, changed = workspace.git_diff(git_repo)
+    assert changed == ["README.md", "new.py"]  # sorted; from git status
+    assert "diff --git" in diff                # git-native format (not the snapshot fallback)
+    assert "+def f" in diff                    # the untracked NEW file shows as an addition
+    assert "+more" in diff                     # the tracked modification shows
+    # idempotent: the intent-to-add markers are cleaned up, so a second call matches
+    assert workspace.git_diff(git_repo) == (diff, changed)
+    assert workspace.git_is_clean(git_repo) is False  # git_diff is read-only re: the tree
+
+
+def test_git_diff_empty_for_a_clean_tree(git_repo):
+    assert workspace.git_diff(git_repo) == ("", [])
+
+
+def test_git_restore_reverts_modifications_and_removes_new_files(git_repo):
+    (git_repo / "new.py").write_text("junk\n", encoding="utf-8")             # untracked
+    (git_repo / "README.md").write_text("# repo\ntampered\n", encoding="utf-8")  # modified
+    assert not workspace.git_is_clean(git_repo)
+    workspace.git_restore(git_repo)
+    assert workspace.git_is_clean(git_repo)                    # back to committed state
+    assert not (git_repo / "new.py").exists()                 # untracked file removed
+    assert (git_repo / "README.md").read_text(encoding="utf-8") == "# repo\n"  # reverted
+
+
+def test_git_restore_keeps_gitignored_files(git_repo):
+    # clean -fd (no -x) must NOT remove .gitignore'd build artifacts.
+    (git_repo / ".gitignore").write_text("build/\n", encoding="utf-8")
+    import subprocess
+    subprocess.run(["git", "-C", str(git_repo), "add", ".gitignore"], check=True,
+                   capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(git_repo), "commit", "-q", "-m", "ignore"], check=True,
+                   capture_output=True, text=True)
+    (git_repo / "build").mkdir()
+    (git_repo / "build" / "artifact.o").write_text("binary-ish\n", encoding="utf-8")
+    workspace.git_restore(git_repo)
+    assert (git_repo / "build" / "artifact.o").exists()  # gitignored artifact survives
+
+
 # --- snapshot + compute_diff: the git-free diff pipeline --------------------
 
 def test_snapshot_reads_text_files(tmp_path):

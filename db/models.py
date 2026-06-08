@@ -71,6 +71,12 @@ runs = Table(
     # the web-written decision the worker consumes to resume an awaiting_input run.
     Column("review", Boolean, nullable=True),
     Column("pending_decision", _JSON, nullable=True),
+    # Phase 10b-1 per-run coding intake: the concrete task + the workspace (a real git
+    # repo) for THIS coding run. NULL => fall back to Config (CODING_TASK /
+    # CODING_WORKSPACE), preserving the 10a global-task behaviour. Ignored by non-coding
+    # workflows.
+    Column("coding_task", Text, nullable=True),
+    Column("coding_workspace", Text, nullable=True),
     CheckConstraint(_in_list("status", RUN_STATUSES), name="ck_runs_status"),
     CheckConstraint(_in_list("trigger", RUN_TRIGGERS), name="ck_runs_trigger"),
 )
