@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Switchboard worker: the APScheduler loop (schedules + pending-run drain).
+       Wrapped in `caffeinate -s` so the Mac stays awake WHILE ON AC POWER; on
+       battery, macOS may still sleep (use `sudo pmset -b sleep 0` to override —
+       deliberate, see deploy/README). __PROJECT_DIR__ is rewritten by install.sh.
+       PATH must include homebrew: the llm seam spawns the `claude` CLI (node). -->
+  <key>Label</key>
+  <string>com.switchboard.worker</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>-s</string>
+    <string>__PROJECT_DIR__/.venv/bin/python</string>
+    <string>cli.py</string>
+    <string>scheduler</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__PROJECT_DIR__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/worker.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/worker.log</string>
+</dict>
+</plist>

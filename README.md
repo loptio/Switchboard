@@ -108,6 +108,12 @@ cd frontend && npm run dev                     # UI on :5173 (proxies to :8000)
 .venv/bin/python cli.py list-runs
 ```
 
+### Run as a service (macOS)
+
+`deploy/install.sh` installs the worker + API as always-on launchd user agents
+(no sudo; survives reboots; `caffeinate` keeps the Mac awake on AC). See
+[deploy/README.md](deploy/README.md) for sleep caveats and Tailscale remote access.
+
 ## Tests
 
 Everything is offline and deterministic — no network, no real model calls, no
