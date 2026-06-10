@@ -2,7 +2,7 @@ import { useState } from "react";
 
 import { ApiError } from "../api/client";
 import { resumeRun } from "../api/endpoints";
-import type { CodingReviewPayload, ReviewPayload } from "../api/types";
+import type { CodingReviewPayload, MetaReviewPayload, ReviewPayload } from "../api/types";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
 import { ErrorBanner } from "../components/ErrorBanner";
@@ -74,6 +74,43 @@ export function CodingDiff({ coding }: { coding: CodingReviewPayload }) {
   );
 }
 
+/** Meta proposal review body (Phase 9): the request, the meta-agent's explanation,
+ *  the proposed workflow/agent defs as formatted JSON. Approving PERSISTS the defs
+ *  (worker-side, after a final re-validation); redo sends feedback into a fresh
+ *  bounded draft loop. */
+export function MetaProposal({ proposal }: { proposal: MetaReviewPayload }) {
+  const agents = proposal.agent_defs ?? [];
+  return (
+    <div>
+      <p role="alert" className={styles.limitBanner}>
+        🤖 The meta-agent drafted this workflow definition (attempt {proposal.attempts}).
+        Approving will <strong>create these definitions</strong> — they become runnable
+        immediately.
+      </p>
+      {proposal.request && (
+        <p>
+          <strong>Request:</strong> {proposal.request}
+        </p>
+      )}
+      {proposal.explanation && <p>{proposal.explanation}</p>}
+      <strong>Proposed workflow</strong>
+      <pre className={styles.diff} aria-label="proposed workflow def">
+        {JSON.stringify(proposal.workflow_def, null, 2)}
+      </pre>
+      {agents.length > 0 && (
+        <>
+          <strong>Proposed agents</strong>
+          {agents.map((a, i) => (
+            <pre className={styles.diff} aria-label="proposed agent def" key={i}>
+              {JSON.stringify(a, null, 2)}
+            </pre>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
 /** Human-review gate UI for an awaiting_input run: show the candidate + approve or
  *  send it back with feedback. The decision is handed to the worker via the API. */
 export function ReviewPanel({
@@ -105,13 +142,16 @@ export function ReviewPanel({
   const items = review?.digest?.items ?? [];
   const issues = review?.issues ?? [];
   const coding = review?.coding;
+  const proposal = review?.proposal;
 
   return (
     <Card>
       <h2 className={styles.outputTitle}>Human review</h2>
       {error && <ErrorBanner message={error} />}
       <p>Review the candidate below, then approve it or send it back with feedback.</p>
-      {coding ? (
+      {proposal ? (
+        <MetaProposal proposal={proposal} />
+      ) : coding ? (
         <CodingDiff coding={coding} />
       ) : (
         <>

@@ -64,6 +64,11 @@ def _report_review(run, outcome) -> int:
 
 
 def _run_once(args: argparse.Namespace) -> int:
+    # Phase 9 guardrail: a meta run ALWAYS takes the human-review gate — the worker
+    # refuses a gateless meta run, so the CLI just turns the gate on transparently.
+    if args.workflow == "meta" and not getattr(args, "review", False):
+        print("note: meta runs always take the human-review gate — enabling --review")
+        args.review = True
     if getattr(args, "review", False):
         if args.workflow == "brief":
             print(
@@ -78,6 +83,11 @@ def _run_once(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
+        if args.workflow == "meta":
+            run, outcome = runner.run_review_once(
+                workflow="meta", task=getattr(args, "task", None)
+            )
+            return _report_review(run, outcome)
         run, outcome = runner.run_review_once()
         return _report_review(run, outcome)
     run = runner.run_once(
@@ -187,20 +197,23 @@ def build_parser() -> argparse.ArgumentParser:
     ro = sub.add_parser("run-once", help="run the workflow once now (manual trigger)")
     ro.add_argument(
         "--workflow",
-        choices=["digest", "brief", "news", "coding"],
+        choices=["digest", "brief", "news", "coding", "meta"],
         default="digest",
         help="which workflow to run (default digest; 'news' is the legacy digest alias; "
-        "'coding' takes --task + --workspace, else CODING_TASK + CODING_WORKSPACE env)",
+        "'coding' takes --task + --workspace, else CODING_TASK + CODING_WORKSPACE env; "
+        "'meta' takes --task = the natural-language workflow request and always reviews)",
     )
     ro.add_argument(
         "--review",
         action="store_true",
-        help="human-in-the-loop: pause for approval before finishing (digest only)",
+        help="human-in-the-loop: pause for approval before finishing "
+        "(digest + meta; meta enables this automatically)",
     )
     ro.add_argument(
         "--task",
         default=None,
-        help="coding workflow: the task for THIS run (overrides CODING_TASK)",
+        help="coding workflow: the task for THIS run (overrides CODING_TASK); "
+        "meta workflow: the natural-language request to draft a workflow from",
     )
     ro.add_argument(
         "--workspace",

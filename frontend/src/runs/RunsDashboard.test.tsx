@@ -119,4 +119,23 @@ describe("RunsDashboard", () => {
     // A later poll reports success → the UI reflects it with no user action.
     await waitFor(() => expect(screen.getByText("Success")).toBeInTheDocument());
   });
+
+  it("meta runs force the review flag and send the request as the task", async () => {
+    const user = userEvent.setup();
+    vi.mocked(listRuns).mockResolvedValue([]);
+    vi.mocked(triggerRun).mockResolvedValue(makeRun({ id: "m1", workflow: "meta" }));
+
+    renderDashboard();
+    await screen.findByText(/no runs yet/i);
+    await user.type(screen.getByLabelText(/workflow to run/i), "meta");
+    await user.type(screen.getByLabelText(/meta request/i), "draft me a brief variant");
+    // review checkbox left UNCHECKED — meta forces it on
+    await user.click(screen.getByRole("button", { name: /run now/i }));
+
+    await waitFor(() =>
+      expect(triggerRun).toHaveBeenCalledWith("meta", true, {
+        coding_task: "draft me a brief variant",
+      }),
+    );
+  });
 });

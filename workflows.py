@@ -218,13 +218,56 @@ CODING_DEF = WorkflowDef(
 )
 
 
+# --- meta workflow (Phase 9): draft → validate → human review ------------------
+# The meta-agent family: a per-run REQUEST (riding the runs.coding_task column, the
+# Phase 10b-1 per-run-task pipe) is drafted into a WorkflowDef/AgentDef PROPOSAL by
+# an llm-seam agent, checked by a DETERMINISTIC validate node (defs_validate + the
+# meta-only rules in meta_agent.validate_proposal), redrafted on errors (bounded by
+# max_redos), and presented at a human_review gate. Persistence happens ONLY after
+# approval, in runner._finalize_meta — never inside the graph (interrupt() replays
+# its node on resume, so the gate handler must stay side-effect-free). Like coding,
+# this family is CODE: its handlers live in meta_orchestrator's LOCAL registries and
+# never enter the Phase 8 manifest — so a proposal can't draft meta (or coding)
+# workflows, and the synthesizer UI can't edit this def. Runner-side, a meta run
+# WITHOUT the review flag is refused (the Phase 9 human-approval guardrail).
+META_DEF = WorkflowDef(
+    id="meta",
+    entry="draft",
+    params={"max_redos": 2},
+    source_ref=None,
+    output_ref="meta",
+    nodes=(
+        Node(
+            "draft", "step",
+            handler_ref="meta_draft", config_key="draft_fn",
+            next="validate",
+        ),
+        Node(
+            "validate", "step",
+            handler_ref="meta_validate",
+            branch=Branch(
+                "meta_route_after_validate",
+                {"human_review": "human_review", "draft": "draft", "give_up": END},
+            ),
+        ),
+        Node(
+            "human_review", "human_review",
+            handler_ref="meta_human_review",
+            branch=Branch("meta_route_after_human_review", {"end": END, "draft": "draft"}),
+        ),
+    ),
+)
+
+
 # Looked up by id (brief §6 footnote: runner finds the def by run.workflow). "news"
-# is the legacy digest label; "digest" is its alias; "coding" is the Phase 10a family.
+# is the legacy digest label; "digest" is its alias; "coding" is the Phase 10a
+# family; "meta" is the Phase 9 meta-agent family.
 WORKFLOWS: dict[str, WorkflowDef] = {
     "news": DIGEST_DEF,
     "digest": DIGEST_DEF,
     "brief": BRIEF_DEF,
     "coding": CODING_DEF,
+    "meta": META_DEF,
 }
 
 

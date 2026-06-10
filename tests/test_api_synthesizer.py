@@ -214,3 +214,27 @@ def test_agent_edit_then_clone_builtin_readonly(client, user):
     assert client.patch(
         "/agents/summarize", json={"name": "x"}, headers=csrf_headers(client)
     ).status_code == 409
+
+
+# --- Phase 9 U1: the agents namespace extends to DB agent defs ---------------
+
+def test_workflow_may_bind_a_db_agent(client, user):
+    """The save guard accepts a workflow binding an agent CREATED via the
+    synthesizer (DB agent def): the runtime resolves DB-only ids and binds them
+    through their built-in (builder, parser) pair, so the save-time namespace is
+    palette ∪ DB — while a resolvable-by-nobody agent_ref is still a 400."""
+    login(client)
+    c = client.post(
+        "/agents/summarize/clone", json={"new_id": "stern-sum"}, headers=csrf_headers(client)
+    )
+    assert c.status_code == 201
+    wf = client.get("/workflows/news", headers=csrf_headers(client)).json()["definition"]
+    wf["id"] = "stern-news"
+    wf["nodes"][0]["agent_ref"] = "stern-sum"
+    r = client.post("/workflows", json={"definition": wf}, headers=csrf_headers(client))
+    assert r.status_code == 201
+
+    wf["id"] = "broken-news"
+    wf["nodes"][0]["agent_ref"] = "ghost"
+    r = client.post("/workflows", json={"definition": wf}, headers=csrf_headers(client))
+    assert r.status_code == 400 and "ghost" in r.json()["detail"]

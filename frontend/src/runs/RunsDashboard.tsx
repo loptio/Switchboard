@@ -26,6 +26,10 @@ export function RunsDashboard() {
   const [codingTask, setCodingTask] = useState("");
   const [codingWorkspace, setCodingWorkspace] = useState("");
   const isCoding = workflow.trim() === "coding";
+  // Phase 9: a meta run's natural-language request rides the same per-run task pipe;
+  // review is MANDATORY for meta (the worker refuses a gateless meta run), so the
+  // trigger forces the flag on rather than letting it fail server-side.
+  const isMeta = workflow.trim() === "meta";
 
   async function onRunNow() {
     setTriggering(true);
@@ -36,8 +40,10 @@ export function RunsDashboard() {
       const coding =
         isCoding && (task || ws)
           ? { coding_task: task || undefined, coding_workspace: ws || undefined }
-          : undefined;
-      const run = await triggerRun(workflow.trim() || undefined, review, coding);
+          : isMeta && task
+            ? { coding_task: task }
+            : undefined;
+      const run = await triggerRun(workflow.trim() || undefined, review || isMeta, coding);
       addOptimistic(run); // show it immediately; polling will track status
     } catch (e) {
       setTriggerError(e instanceof ApiError ? e.detail : "Failed to trigger a run.");
@@ -75,22 +81,28 @@ export function RunsDashboard() {
         </div>
       </div>
 
-      {isCoding && (
+      {(isCoding || isMeta) && (
         <div className={styles.codingFields}>
           <textarea
-            aria-label="Coding task"
-            placeholder="coding task for this run (blank = CODING_TASK env)"
+            aria-label={isMeta ? "Meta request" : "Coding task"}
+            placeholder={
+              isMeta
+                ? "describe the workflow you want — the meta-agent drafts it for your review"
+                : "coding task for this run (blank = CODING_TASK env)"
+            }
             value={codingTask}
             onChange={(e) => setCodingTask(e.target.value)}
             className={styles.codingTask}
           />
-          <input
-            aria-label="Coding workspace"
-            placeholder="workspace path — a git repo (blank = CODING_WORKSPACE env)"
-            value={codingWorkspace}
-            onChange={(e) => setCodingWorkspace(e.target.value)}
-            className={styles.codingWorkspace}
-          />
+          {isCoding && (
+            <input
+              aria-label="Coding workspace"
+              placeholder="workspace path — a git repo (blank = CODING_WORKSPACE env)"
+              value={codingWorkspace}
+              onChange={(e) => setCodingWorkspace(e.target.value)}
+              className={styles.codingWorkspace}
+            />
+          )}
         </div>
       )}
 

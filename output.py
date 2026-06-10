@@ -87,6 +87,56 @@ def render_coding_markdown(result: CodingResult) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def render_meta_markdown(result: dict) -> str:
+    """Render a meta run's final result into markdown: the request, whether the
+    proposal was approved (and what was created), the explanation, and the proposed
+    defs as fenced JSON — the run's durable audit record (Phase 9), readable in the
+    web RunDetail and the local output file."""
+    import json as _json
+
+    proposal = result.get("proposal") or {}
+    wf = proposal.get("workflow_def") or {}
+    agent_defs = proposal.get("agent_defs") or []
+    approved = bool(result.get("approved"))
+    lines = [
+        "# Meta run — workflow proposal",
+        "",
+        f"**Request:** {_inline(result.get('request', '') or '_(none)_')}",
+        "",
+        f"**Outcome:** {'approved — defs persisted' if approved else 'not approved — nothing persisted'}"
+        f" (after {result.get('attempts', 0)} draft attempt(s))",
+        "",
+    ]
+    errors = result.get("errors") or []
+    if errors:
+        lines.extend(["## Validation errors (final attempt)", ""])
+        lines.extend(f"- {_inline(e)}" for e in errors)
+        lines.append("")
+    explanation = proposal.get("explanation", "")
+    if explanation:
+        lines.extend(["## Explanation", "", explanation.strip(), ""])
+    lines.extend([
+        f"## Proposed workflow `{wf.get('id', '?')}`",
+        "",
+        "```json",
+        _json.dumps(wf, ensure_ascii=False, indent=2),
+        "```",
+        "",
+    ])
+    if agent_defs:
+        lines.extend(["## Proposed agents", ""])
+        for d in agent_defs:
+            lines.extend([
+                f"### `{d.get('id', '?')}`",
+                "",
+                "```json",
+                _json.dumps(d, ensure_ascii=False, indent=2),
+                "```",
+                "",
+            ])
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _write(markdown: str, output_dir: Path, name: str) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / name
@@ -107,3 +157,8 @@ def write_brief(markdown: str, output_dir: Path, day: date) -> Path:
 def write_coding(markdown: str, output_dir: Path, day: date) -> Path:
     """Write the markdown to output_dir/coding-YYYY-MM-DD.md and return the path."""
     return _write(markdown, output_dir, f"coding-{day.isoformat()}.md")
+
+
+def write_meta(markdown: str, output_dir: Path, day: date) -> Path:
+    """Write the markdown to output_dir/meta-YYYY-MM-DD.md and return the path."""
+    return _write(markdown, output_dir, f"meta-{day.isoformat()}.md")

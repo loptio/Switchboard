@@ -56,13 +56,23 @@ from config import Config, load_config
 from fetch import fetch_feed
 from mailer import send_brief, send_digest
 from orchestrator import ReviewOutcome, build_digest, resume_review_run, start_review_run
+import manifest
+import meta_agent
+from meta_orchestrator import (
+    DEFAULT_MAX_REDOS as META_DEFAULT_MAX_REDOS,
+    existing_def_ids as _meta_existing_def_ids,
+    resume_meta_review_run,
+    start_meta_review_run,
+)
 from output import (
     render_brief_markdown,
     render_coding_markdown,
     render_markdown,
+    render_meta_markdown,
     write_brief,
     write_coding,
     write_digest,
+    write_meta,
 )
 from sources import gather_sources
 
@@ -352,7 +362,102 @@ def _run_pipeline(
         return _run_brief_pipeline(run, cfg, now, wf=wf, wf_arg=wf_arg)
     if wf.output_ref == "coding":
         return _run_coding_pipeline(run, cfg, now, wf=wf, wf_arg=wf_arg, coding_fn=coding_fn)
+    if wf.output_ref == "meta":
+        # Phase 9 guardrail: a meta run MUST pass the human gate — there is no
+        # straight-through path (auto-persisting agent-written defs is exactly what
+        # the blueprint's meta-agent guardrails forbid).
+        log.warning("run %s: meta run refused — review gate is mandatory", run.id)
+        return db.mark_failed(
+            run.id, "meta workflow requires review — trigger it with review enabled", now=now
+        )
     return _run_digest_pipeline(run, cfg, now, wf=wf, wf_arg=wf_arg)
+
+
+# --- meta family (Phase 9): request → proposal → human gate → persist ---------
+
+
+def _meta_request(run: db.Run) -> str:
+    """The meta run's natural-language request rides the runs.coding_task column —
+    the Phase 10b-1 per-run-task pipe; the column name is historic. No Config
+    fallback: a meta run without a request is refused."""
+    return (run.coding_task or "").strip()
+
+
+def _meta_max_redos(wf) -> int:
+    """The drafting redo bound, from the WorkflowDef params (data)."""
+    return (wf.params or {}).get("max_redos", META_DEFAULT_MAX_REDOS)
+
+
+def _finalize_meta(run: db.Run, result: dict, cfg: Config, now: datetime | None) -> db.Run:
+    """Finish a meta run. Approved → persist the proposal's defs (agents first, then
+    the workflow) via the existing CRUD, save the audit Output, mark success. Not
+    approved (give_up) → save the audit Output, mark failed, persist NOTHING.
+
+    Defense in depth before any write (Phase 9 brief §3.5): re-run the full proposal
+    validation against the CURRENT palette + taken ids — the DB may have gained a
+    colliding def while the run sat awaiting approval, and the DAO has no built-in
+    read-only guard of its own (recon: API-router-only), so this re-check IS the
+    worker-side guard. Never raises."""
+    approved = bool(result.get("approved"))
+    proposal = result.get("proposal") or {}
+
+    def _save_audit_output() -> None:
+        day = now.date() if now is not None else date.today()
+        markdown = render_meta_markdown(result)
+        write_meta(markdown, cfg.output_dir, day)
+        db.save_output(run.id, markdown, type="meta", data=dict(result), now=now)
+
+    if not approved:
+        reason = "; ".join(result.get("errors") or []) or "proposal was not approved"
+        try:
+            _save_audit_output()
+        except Exception:  # the audit record must not mask the real failure
+            log.exception("run %s: failed to save meta audit output", run.id)
+        log.warning("run %s: meta proposal not persisted: %s", run.id, reason)
+        return db.mark_failed(run.id, f"meta proposal rejected: {reason}", now=now)
+
+    try:
+        wf_ids, ag_ids = _meta_existing_def_ids()
+        errors = meta_agent.validate_proposal(
+            proposal,
+            palette=manifest.build_manifest(),
+            existing_workflow_ids=wf_ids,
+            existing_agent_ids=ag_ids,
+        )
+        if errors:
+            try:
+                _save_audit_output()
+            except Exception:
+                log.exception("run %s: failed to save meta audit output", run.id)
+            log.error("run %s: approved proposal failed final checks: %s", run.id, errors)
+            return db.mark_failed(
+                run.id,
+                "approved meta proposal failed final checks: " + "; ".join(errors),
+                now=now,
+            )
+        wf_def = proposal["workflow_def"]
+        description = f"created by meta-agent (run {run.id})"
+        # Agents first: a workflow must never land referencing agents that don't
+        # exist yet; a failure mid-way leaves only unreferenced (harmless) agent rows.
+        for d in proposal.get("agent_defs") or []:
+            db.create_agent_def(d["id"], d, name=d["id"], description=description, now=now)
+        db.create_workflow_def(
+            wf_def["id"], wf_def, name=wf_def["id"], description=description, now=now
+        )
+    except Exception as exc:
+        log.exception("run %s failed while persisting the approved proposal", run.id)
+        return db.mark_failed(run.id, f"meta persist failed: {exc}", now=now)
+
+    try:
+        _save_audit_output()
+    except Exception as exc:
+        log.exception("run %s: defs persisted but audit output failed", run.id)
+        return db.mark_failed(
+            run.id, f"defs persisted; output bookkeeping failed: {exc}", now=now
+        )
+    final = db.mark_success(run.id, now=now)
+    log.info("run %s succeeded (meta: workflow %r persisted)", run.id, wf_def.get("id"))
+    return final
 
 
 def run_once(
@@ -390,6 +495,7 @@ def execute_claimed_run(
     summarize_fn=None,
     verify_fn=None,
     coding_fn=None,
+    draft_fn=None,
 ) -> db.Run:
     """Execute a run the worker already CLAIMED (status=running); return the Run.
 
@@ -401,7 +507,8 @@ def execute_claimed_run(
     Phase 8: a run flagged `review` (digest family) takes the interruptible path —
     it suspends at the human-review gate (awaiting_input) for a web approve/redo —
     instead of running straight through. `checkpointer`/`summarize_fn`/`verify_fn`
-    are injectable for offline tests (an InMemorySaver + fakes).
+    (and `coding_fn`/`draft_fn` for their families) are injectable for offline
+    tests (an InMemorySaver + fakes).
     """
     cfg = config or load_config()
     log.info(
@@ -412,7 +519,7 @@ def execute_claimed_run(
         return _run_review_claimed(
             run, cfg, now,
             checkpointer=checkpointer, summarize_fn=summarize_fn, verify_fn=verify_fn,
-            coding_fn=coding_fn,
+            coding_fn=coding_fn, draft_fn=draft_fn,
         )
     return _run_pipeline(run, cfg, now, coding_fn=coding_fn)
 
@@ -484,14 +591,85 @@ def _apply_coding_outcome(run: db.Run, outcome, cfg: Config, now: datetime | Non
     return _finalize_coding(run, outcome.result, cfg, now)
 
 
+def _apply_meta_outcome(run: db.Run, outcome, cfg: Config, now: datetime | None) -> db.Run:
+    """Apply a meta review outcome: suspend at the proposal gate (awaiting_input, the
+    {"proposal": ...} payload persisted as a type="review" Output) or finalize —
+    persisting the defs ONLY on an approved completion (Phase 9 §3.2)."""
+    if outcome.status == "suspended":
+        _save_review_payload(run.id, outcome.payload, now)
+        suspended = db.mark_awaiting_input(run.id)
+        log.info("run %s suspended for meta proposal review (awaiting_input)", run.id)
+        return suspended
+    return _finalize_meta(run, outcome.result, cfg, now)
+
+
+def _run_meta_review_claimed(
+    run: db.Run,
+    cfg: Config,
+    now: datetime | None,
+    *,
+    wf,
+    wf_arg,
+    checkpointer=None,
+    draft_fn=None,
+) -> db.Run:
+    """Start an interruptible META run the worker claimed: draft + validate (bounded
+    redo), then suspend at the proposal gate (awaiting_input, payload persisted) or
+    complete as give_up. Mirrors _run_coding_review_claimed for the meta family."""
+    request = _meta_request(run)
+    if not request:
+        return db.mark_failed(
+            run.id, "meta run has no request (set --task / the task field)", now=now
+        )
+    extra = {"draft_fn": draft_fn} if draft_fn is not None else {}
+    try:
+        with _checkpointer_cm(checkpointer) as cp:
+            outcome = start_meta_review_run(
+                request, model=cfg.model, thread_id=run.id, checkpointer=cp,
+                max_redos=_meta_max_redos(wf), wf=wf_arg, **extra,
+            )
+        return _apply_meta_outcome(run, outcome, cfg, now)
+    except Exception as exc:
+        log.exception("run %s failed", run.id)
+        return db.mark_failed(run.id, str(exc), now=now)
+
+
+def _resume_meta_claimed(
+    run: db.Run,
+    cfg: Config,
+    now: datetime | None,
+    decision: dict,
+    *,
+    wf_arg,
+    checkpointer=None,
+    draft_fn=None,
+) -> db.Run:
+    """Resume a claimed awaiting_input META run with its decision: approve →
+    finalize (persist the defs); redo (+feedback) → a fresh bounded draft loop,
+    re-suspended at the gate."""
+    extra = {"draft_fn": draft_fn} if draft_fn is not None else {}
+    try:
+        with _checkpointer_cm(checkpointer) as cp:
+            outcome = resume_meta_review_run(
+                thread_id=run.id, checkpointer=cp, decision=decision, wf=wf_arg, **extra
+            )
+        db.clear_run_decision(run.id)  # consumed
+        return _apply_meta_outcome(run, outcome, cfg, now)
+    except Exception as exc:
+        log.exception("run %s failed during resume", run.id)
+        return db.mark_failed(run.id, str(exc), now=now)
+
+
 def run_review_once(
     *,
     workflow: str = "news",
+    task: str | None = None,
     config: Config | None = None,
     now: datetime | None = None,
     checkpointer=None,
     summarize_fn=None,
     verify_fn=None,
+    draft_fn=None,
 ) -> tuple[db.Run, ReviewOutcome | None]:
     """Create an interruptible run (human-review gate ON) and start it.
 
@@ -500,8 +678,27 @@ def run_review_once(
     outcome carries the review payload; resume later via `resume_run`. On
     completion → the digest is finalized (rendered/stored/emailed) and the Run is
     `success`. A failure is recorded (status=failed) and (Run, None) returned.
+
+    Phase 9: the meta family rides this entry too (`workflow="meta"` + `task` = the
+    natural-language request); it dispatches to the meta gate and returns
+    (Run, None) — the proposal payload is read back via the run's review Output.
     """
     cfg = config or load_config()
+    # Meta dispatch FIRST (resolve degrades to the digest path on any lookup miss,
+    # preserving the pre-Phase-9 behaviour byte-for-byte for digest/news).
+    try:
+        wf = defs_resolve.resolve_workflow_def(workflow)
+    except KeyError:
+        wf = None
+    if wf is not None and wf.output_ref == "meta":
+        run = db.create_run(workflow=workflow, trigger="manual", coding_task=task, now=now)
+        db.mark_running(run.id, now=now)
+        log.info("run %s started (trigger=manual, meta review)", run.id)
+        wf_arg = None if wf is workflows.WORKFLOWS.get(workflow) else wf
+        final = _run_meta_review_claimed(
+            run, cfg, now, wf=wf, wf_arg=wf_arg, checkpointer=checkpointer, draft_fn=draft_fn
+        )
+        return final, None
     run = db.create_run(workflow=workflow, trigger="manual", now=now)
     db.mark_running(run.id, now=now)
     log.info("run %s started (trigger=manual, human-review)", run.id)
@@ -548,6 +745,19 @@ def resume_run(
         raise ValueError(f"run {run_id} is {run.status!r}, not awaiting_input")
     db.update_run_status(run_id, "running")
     log.info("run %s resumed (decision=%s)", run_id, decision.get("action"))
+    # Phase 9: a suspended META run resumes through the meta gate (approve →
+    # persist the defs). Resolution misses fall through to the digest path,
+    # preserving the pre-Phase-9 behaviour for digest/news byte-for-byte.
+    try:
+        _wf = defs_resolve.resolve_workflow_def(run.workflow)
+    except KeyError:
+        _wf = None
+    if _wf is not None and _wf.output_ref == "meta":
+        wf_arg = None if _wf is workflows.WORKFLOWS.get(run.workflow) else _wf
+        final = _resume_meta_claimed(
+            run, cfg, now, decision, wf_arg=wf_arg, checkpointer=checkpointer
+        )
+        return final, None
     try:
         with _checkpointer_cm(checkpointer) as cp:
             outcome = resume_review_run(
@@ -577,11 +787,13 @@ def _run_review_claimed(
     summarize_fn=None,
     verify_fn=None,
     coding_fn=None,
+    draft_fn=None,
 ) -> db.Run:
     """Start an interruptible REVIEW run the worker claimed: run the auto-loop, then
     suspend at the human-review gate (awaiting_input, payload persisted) or finalize.
-    Review is digest-only in U1; U2 adds the coding diff-review gate (coding_fn). A
-    family with no review gate falls back to the straight pipeline."""
+    Review is digest-only in U1; U2 adds the coding diff-review gate (coding_fn);
+    Phase 9 adds the meta proposal gate (draft_fn). A family with no review gate
+    falls back to the straight pipeline."""
     try:
         wf = defs_resolve.resolve_workflow_def(run.workflow)
     except KeyError:
@@ -591,6 +803,11 @@ def _run_review_claimed(
         wf_arg = None if wf is workflows.WORKFLOWS.get(run.workflow) else wf
         return _run_coding_review_claimed(
             run, cfg, now, wf=wf, wf_arg=wf_arg, checkpointer=checkpointer, coding_fn=coding_fn
+        )
+    if wf.output_ref == "meta":
+        wf_arg = None if wf is workflows.WORKFLOWS.get(run.workflow) else wf
+        return _run_meta_review_claimed(
+            run, cfg, now, wf=wf, wf_arg=wf_arg, checkpointer=checkpointer, draft_fn=draft_fn
         )
     if wf.output_ref != "digest":
         # a family with no review gate: take the straight pipeline (coding_fn threaded
@@ -658,11 +875,13 @@ def resume_claimed_run(
     summarize_fn=None,
     verify_fn=None,
     coding_fn=None,
+    draft_fn=None,
 ) -> db.Run:
     """Resume an already-CLAIMED awaiting_input run with its web-written
     pending_decision (the worker half of the web resume handoff). Clears the decision
     once consumed; re-suspends (awaiting_input) on a redo, finalizes on approve.
-    Dispatches by family: coding diff-review (U2) vs digest review."""
+    Dispatches by family: coding diff-review (U2) / meta proposal review (Phase 9)
+    vs digest review."""
     cfg = config or load_config()
     decision = run.pending_decision or {}
     try:
@@ -674,6 +893,10 @@ def resume_claimed_run(
     if wf.output_ref == "coding":
         return _resume_coding_claimed(
             run, cfg, now, decision, wf_arg=wf_arg, checkpointer=checkpointer, coding_fn=coding_fn
+        )
+    if wf.output_ref == "meta":
+        return _resume_meta_claimed(
+            run, cfg, now, decision, wf_arg=wf_arg, checkpointer=checkpointer, draft_fn=draft_fn
         )
     try:
         with _checkpointer_cm(checkpointer) as cp:

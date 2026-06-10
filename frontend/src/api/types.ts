@@ -135,10 +135,20 @@ export interface CodingReviewPayload {
   commands?: string[]; // Phase 10b-2: shell commands the agent ran (side effects not in the diff)
   git_tampered?: string[]; // Phase 10b-2: .git paths a command touched (reverted; run refused)
 }
+export interface MetaReviewPayload {
+  // Phase 9: a meta run's validated proposal awaiting approval. Approve persists
+  // the defs (worker-side); redo sends feedback into a fresh bounded draft loop.
+  request: string;
+  workflow_def: Record<string, unknown> | null;
+  agent_defs: Record<string, unknown>[];
+  explanation: string;
+  attempts: number;
+}
 export interface ReviewPayload {
   digest?: { items: { title: string; link: string; one_line_summary: string }[] };
   issues?: ReviewIssue[];
   coding?: CodingReviewPayload;
+  proposal?: MetaReviewPayload;
 }
 
 export interface Manifest {

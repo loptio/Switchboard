@@ -54,8 +54,18 @@ def _row_out(row) -> WorkflowDefOut:
     )
 
 
+def _manifest_for_validation() -> dict:
+    """The save-guard manifest with the agents namespace EXTENDED by the DB agent
+    defs (Phase 9 U1): a workflow may bind any agent the runtime can resolve — a
+    palette built-in or a DB-created AgentDef (defs_resolve resolves DB-only ids and
+    the runner binds them through their built-in (builder, parser) pair)."""
+    m = dict(_MANIFEST)
+    m["agents"] = [*m["agents"], *(r.agent_id for r in db.list_agent_defs())]
+    return m
+
+
 def _validate_or_400(definition: dict) -> None:
-    errors = defs_validate.validate_workflow_def(definition, _MANIFEST)
+    errors = defs_validate.validate_workflow_def(definition, _manifest_for_validation())
     if errors:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "; ".join(errors))
 

@@ -95,3 +95,35 @@ describe("ReviewPanel (coding diff)", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(/hooks\/pre-commit/);
   });
 });
+
+const META_REVIEW: ReviewPayload = {
+  proposal: {
+    request: "make me a stern digest variant",
+    workflow_def: { id: "stern-news", entry: "summarize" },
+    agent_defs: [{ id: "stern-summarize", parser_ref: "parse_digest" }],
+    explanation: "克隆 digest 并替换 summarizer 提示词",
+    attempts: 1,
+  },
+};
+
+describe("ReviewPanel (meta proposal)", () => {
+  beforeEach(() => vi.mocked(resumeRun).mockResolvedValue({ id: "r1" } as Run));
+  afterEach(() => vi.clearAllMocks());
+
+  it("renders the request, explanation and proposed defs", () => {
+    render(<ReviewPanel runId="r1" review={META_REVIEW} onResolved={() => {}} />);
+    expect(screen.getByText(/stern digest variant/)).toBeInTheDocument();
+    expect(screen.getByText(/克隆 digest/)).toBeInTheDocument();
+    expect(screen.getByLabelText("proposed workflow def").textContent).toContain("stern-news");
+    expect(screen.getByLabelText("proposed agent def").textContent).toContain("stern-summarize");
+    // approving creates defs — the panel says so up front
+    expect(screen.getByRole("alert")).toHaveTextContent(/create these definitions/i);
+  });
+
+  it("approve flows through the same resume handoff", async () => {
+    const user = userEvent.setup();
+    render(<ReviewPanel runId="r1" review={META_REVIEW} onResolved={() => {}} />);
+    await user.click(screen.getByRole("button", { name: /approve/i }));
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledWith("r1", "approve", undefined));
+  });
+});
