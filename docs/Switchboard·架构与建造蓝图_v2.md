@@ -124,7 +124,7 @@
 - **认证:自托管轻量方案** ✅ — passlib/bcrypt + Starlette SessionMiddleware 签名 cookie + CSRF token(决策 3;比 fastapi-users/Auth0 更轻,单用户够用);全程 HTTPS、bcrypt 哈希。
 - **编排引擎:LangGraph** ✅ — StateGraph + checkpointer(决策 8);已合并 master,通用编排器在其上构图。
 - **Agent 运行时:Claude Agent SDK(Python)** ✅ — 推理经 `llm.py`、coding 经 `coding_agent.py` 两接缝调用;计费走订阅额度(绝不设 `ANTHROPIC_API_KEY`)。
-- **迁移:Alembic** ✅;**测试:pytest 401 项 + 前端 vitest 39 项**(全离线确定性)✅。
+- **迁移:Alembic** ✅;**测试:pytest 454 项 + 前端 vitest 42 项**(全离线确定性)✅。
 - **多厂商层(后期才接):LiteLLM / LangGraph 其他 provider** — 见 §5.5,先留缝。
 - **托管:本机 Mac 自托管** 🔨,上云推迟(决策 4)。
 
@@ -135,7 +135,7 @@
 - **认证** ✅:登录是真实安全面(决策 3 自托管方案)。
 - **密钥管理**:API key、SMTP 应用密码等**绝不写死、绝不入版本库**;用环境变量 / `.env`(`.gitignore`)。*推 GitHub 前务必扫历史,泄露则轮换。*
 - **Agent 权限** ⬜:用 Agent SDK 权限模式,**逐 agent 最小权限**(写进 AgentDef,Phase 7);**工作区限制**(代理只能碰选定资料夹,Phase 8)。
-- **meta-agent 护栏(Phase 9)**:能创建 agent 又能排程的 agent = 能让系统干任意事。必配:强权限边界、**人在回路审批**它产出的配置(它只产出"可审的数据")、审计日志、沙箱隔离。
+- **meta-agent 护栏(Phase 9)** ✅:能创建 agent 又能排程的 agent = 能让系统干任意事。已配齐:调色板硬边界(只产出重组已注册组件的**可审数据**,永不产代码)、**人在回路审批必经**(无审门路径被 worker 拒绝)、只新不改 + 落盘前重验、审计 Output(请求/提案/验证报告/决定全程入库)。
 
 ---
 
@@ -151,13 +151,13 @@
 - ✅ **Phase 6** — 真实复杂任务工作流(多源采集+过滤 / 解读+反向思考 / 组装+E2E,约 2–3 unit)。证明多代理价值;给出第二个真实工作流供 Phase 7 归纳。
 - ✅ **Phase 7** — 工作流与代理"数据化" + 通用编排器(代理即数据 / 工作流定义 schema + 读定义动态构图的通用编排器 / dogfood 重写两个工作流,约 3 unit)。兑现第 3 节。
 - ✅ **Phase 8** — 网页合成器 + 监控 + 网页版人在环 + 工作区(监控+网页人在环 / 合成器 UI / 工作区选择+权限,约 2–3 unit)。
-- ⬜ **Phase 9** — Meta-agent(带护栏)—— 9/10 先后到时再定(约 1–2 unit)。依赖 Phase 7,受益于 Phase 8。
+- ✅ **Phase 9** — Meta-agent(带护栏),2026-06-12 合并:meta 工作流家族(请求 → llm 接缝起草 WorkflowDef/AgentDef 提案 → 确定性验证节点有界重画 → 人审门 → **approve 才落盘**,经现有 defs CRUD)。护栏全配:调色板硬边界(meta/coding 胶水不进 manifest,不可自我起草)、必审(straight 路径拒绝)、只新不改 + 落盘前重验(worker 侧内置只读守卫)、审计 Output。U1:保存验证的 agents 命名空间扩为"内置 ∪ DB AgentDef"。真 E2E 全环:meta 起草 cautious-digest → 人工 redo 补输出契约 → approve 落盘 → **运行了 meta 创造的工作流(成功)**。详见 Phase 9 简报。
 - 🔨 **Phase 10** — Coding-agent(**系统终点**),分片推进:
   - ✅ **10a** 接缝 + 编码家族:`coding_agent.py`(唯一 agent-loop SDK 调用者、可 fake、有界)+ coding 工作流 + web diff 审核
   - ✅ **10b-1** 可指挥:每 run task/workspace + git 感知 diff/还原 + clean-tree 前置 + `.git` 拒写
   - ✅ **10b-2-1** 真 shell + 沙箱(2026-06-11 合并):Bash + 借用 Seatbelt(文件系统→工作区、网络拒、命令超时)+ 命令审计 + `.git` 完整性兜底 + worker 密钥 denylist 擦除(逃逸验收 hands-on 通过)
   - ⬜ 10b-2 后段(网络细粒度放行、commit/PR 自动化)· 10b-3(会话生命周期 UI)· 10c(多 agent 对话)。前置债:coding 进共享并发 worker 前,env 擦除须改子进程级(见 `coding_agent._scrubbed_env`)
-- ⬜ **(小项,非 phase)Mac-as-server**:常驻服务 + 防休眠 + 可选 Tailscale,让"踢一脚走人、从手机看"落地。上云推迟。
+- 🔨 **(小项,非 phase)Mac-as-server**:已建(deploy/ 的 launchd user agents:worker 带 caffeinate + API 于 127.0.0.1:8400,Tailscale 远程方案见 deploy/README)——**安装 = 用户跑一次 `deploy/install.sh`**(自启动服务的开关留给人)。上云推迟。
 - (浏览器 / 社媒 agent:按需插入,先过 ToS 合规。)
 
 诀窍不变:**缝按完整愿景设计好,但一片片实现。**
@@ -210,4 +210,4 @@
 | 13 | 系统终点 | **Switchboard 里的 coding agent(Phase 10)** | 跑会用工具、管会话、能互相对话的 coding agent。实现=新增 `coding_agent.py` 接缝(Agent SDK agent-loop)+ 会话管理 + 沙箱 + 多 agent 协调;激活已留好的 AgentDef.允许工具 + §6 的 Agent SDK 权限/工作区/沙箱。正交于 8/9(依赖 Phase 7 + run/worker 管道,不依赖合成器/meta-agent),放最后是风险排序(最大/最险/计量计费),非依赖 |
 | 14 | Phase 8 通用性约束 | 合成器与数据模型保持节点类型开放 | 将来加 `coding_agent` 节点类型是"加"不是"重写"(Phase 7 的 α 已支持);别写死"只有推理工作流"假设。Phase 8 的监控 + web 人在环为 coding agent 直接复用 |
 
-> 状态以代码 + 各阶段简报为准(本表只记"定了什么")。当前:Phase 0–8 + 10a/10b-1/10b-2-1 已合并 master;Phase 9(meta-agent)与 Phase 10 余下分片未开始 —— 详见 §8 路线图。
+> 状态以代码 + 各阶段简报为准(本表只记"定了什么")。当前:Phase 0–9 + 10a/10b-1/10b-2-1 已合并 master(Phase 9 含真 E2E:meta 起草 → 人审 redo/approve → 运行其造物成功);Phase 10 余下分片(10b-2 后段/10b-3/10c)未开始 —— 详见 §8 路线图。
