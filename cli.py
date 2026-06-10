@@ -197,11 +197,12 @@ def build_parser() -> argparse.ArgumentParser:
     ro = sub.add_parser("run-once", help="run the workflow once now (manual trigger)")
     ro.add_argument(
         "--workflow",
-        choices=["digest", "brief", "news", "coding", "meta"],
         default="digest",
-        help="which workflow to run (default digest; 'news' is the legacy digest alias; "
+        help="which workflow to run: a built-in (digest [default], brief, news = the "
+        "legacy digest alias, coding, meta) OR any synthesizer/meta-created def id "
+        "(resolved DB-override-else-code; an unknown id fails the run cleanly). "
         "'coding' takes --task + --workspace, else CODING_TASK + CODING_WORKSPACE env; "
-        "'meta' takes --task = the natural-language workflow request and always reviews)",
+        "'meta' takes --task = the natural-language workflow request and always reviews",
     )
     ro.add_argument(
         "--review",

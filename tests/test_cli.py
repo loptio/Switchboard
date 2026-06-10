@@ -231,3 +231,15 @@ def test_checkpointer_setup_dispatches(monkeypatch, capsys):
     assert cli.main(["checkpointer-setup"]) == 0
     assert called == [True]
     assert "ready" in capsys.readouterr().out
+
+
+def test_run_once_accepts_a_db_def_workflow_id(monkeypatch):
+    """Phase 8 made workflow ids dynamic (DB defs); the CLI must not whitelist the
+    built-ins — a synthesizer/meta-created id passes through to the runner, which
+    resolves it (DB-override-else-code) and fails an unknown id cleanly."""
+    seen = {}
+    monkeypatch.setattr(
+        runner, "run_once", lambda **kw: seen.update(kw) or _run(workflow="cautious-digest")
+    )
+    assert cli.main(["run-once", "--workflow", "cautious-digest"]) == 0
+    assert seen["workflow"] == "cautious-digest"
