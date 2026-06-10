@@ -401,16 +401,19 @@ def _finalize_meta(run: db.Run, result: dict, cfg: Config, now: datetime | None)
     approved = bool(result.get("approved"))
     proposal = result.get("proposal") or {}
 
-    def _save_audit_output() -> None:
+    def _save_audit_output(record: dict) -> None:
+        # The audit record must tell the truth about THIS outcome — callers pass an
+        # amended copy when the graph's approved/errors no longer match reality
+        # (review finding: a collision-failed finalize must not read "approved").
         day = now.date() if now is not None else date.today()
-        markdown = render_meta_markdown(result)
+        markdown = render_meta_markdown(record)
         write_meta(markdown, cfg.output_dir, day)
-        db.save_output(run.id, markdown, type="meta", data=dict(result), now=now)
+        db.save_output(run.id, markdown, type="meta", data=dict(record), now=now)
 
     if not approved:
         reason = "; ".join(result.get("errors") or []) or "proposal was not approved"
         try:
-            _save_audit_output()
+            _save_audit_output(result)
         except Exception:  # the audit record must not mask the real failure
             log.exception("run %s: failed to save meta audit output", run.id)
         log.warning("run %s: meta proposal not persisted: %s", run.id, reason)
@@ -426,7 +429,7 @@ def _finalize_meta(run: db.Run, result: dict, cfg: Config, now: datetime | None)
         )
         if errors:
             try:
-                _save_audit_output()
+                _save_audit_output({**result, "approved": False, "errors": errors})
             except Exception:
                 log.exception("run %s: failed to save meta audit output", run.id)
             log.error("run %s: approved proposal failed final checks: %s", run.id, errors)
@@ -446,10 +449,18 @@ def _finalize_meta(run: db.Run, result: dict, cfg: Config, now: datetime | None)
         )
     except Exception as exc:
         log.exception("run %s failed while persisting the approved proposal", run.id)
+        # Leave a truthful durable record of the failed persist too (review finding:
+        # this path previously skipped the audit output entirely).
+        try:
+            _save_audit_output(
+                {**result, "approved": False, "errors": [f"persist failed: {exc}"]}
+            )
+        except Exception:
+            log.exception("run %s: failed to save meta audit output", run.id)
         return db.mark_failed(run.id, f"meta persist failed: {exc}", now=now)
 
     try:
-        _save_audit_output()
+        _save_audit_output(result)
     except Exception as exc:
         log.exception("run %s: defs persisted but audit output failed", run.id)
         return db.mark_failed(

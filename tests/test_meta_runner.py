@@ -189,6 +189,11 @@ def test_finalize_recheck_catches_a_collision_gained_while_suspended(database, t
     # the human's row is untouched; no agent orphans
     assert db.get_workflow_def("meta-made").name == "human's"
     assert db.list_agent_defs() == []
+    # the audit record tells the truth: NOT approved, with the collision errors —
+    # never "approved — defs persisted" (adversarial-review finding).
+    metas = [o for o in db.list_outputs(claimed.id) if o.type == "meta"]
+    assert len(metas) == 1 and metas[0].data["approved"] is False
+    assert any("already exists" in e for e in metas[0].data["errors"])
 
 
 # --- the CLI inline path ---------------------------------------------------------
@@ -210,3 +215,63 @@ def test_run_review_once_meta_and_cli_resume_approve(database, tmp_path):
     assert outcome is None
     assert final.status == "success"
     assert db.get_workflow_def("meta-made") is not None
+
+
+# --- review-driven hardening (Phase 9 adversarial review) -----------------------
+
+def test_scheduler_triggered_meta_run_is_refused(database, tmp_path):
+    """The mandatory-review guard is trigger-agnostic: a scheduled meta run (no
+    review flag — schedules have none) is refused like any other gateless path."""
+    run = runner.run_once(
+        trigger="scheduled", workflow="meta", coding_task="x", config=_cfg(tmp_path), now=T0
+    )
+    assert run.status == "failed" and "requires review" in run.error
+
+
+def test_approve_persists_multiple_agents(database, tmp_path):
+    saver = InMemorySaver()
+    cfg = _cfg(tmp_path)
+    proposal = _valid(agent_id="stern-summarize")
+    # bind the verify node to a second new agent (clones the verify pair)
+    proposal["workflow_def"]["nodes"][1]["agent_ref"] = "harsh-verify"
+    proposal["agent_defs"].append(
+        {
+            "id": "harsh-verify",
+            "system_prompt": "Reject anything unsupported.",
+            "prompt_builder_ref": "digest_verify_prompt",
+            "parser_ref": "parse_critique",
+            "model": None,
+            "params": {},
+        }
+    )
+    claimed = _claimed_meta_run()
+    runner.execute_claimed_run(
+        claimed, config=cfg, now=T0, checkpointer=saver, draft_fn=_D(proposal)
+    )
+    db.set_run_decision(claimed.id, {"action": "approve"})
+    runner.resume_claimed_run(db.claim_next_resumable_run(now=T0), config=cfg, now=T0, checkpointer=saver)
+    assert db.get_run(claimed.id).status == "success"
+    assert {r.agent_id for r in db.list_agent_defs()} == {"stern-summarize", "harsh-verify"}
+    assert db.get_workflow_def("meta-made") is not None
+
+
+def test_persist_failure_leaves_a_truthful_audit_record(database, tmp_path, monkeypatch):
+    """If the persist itself blows up (e.g. a race the re-check missed), the run
+    still gets a durable type='meta' audit Output saying NOT approved + why."""
+    saver = InMemorySaver()
+    cfg = _cfg(tmp_path)
+    claimed = _claimed_meta_run()
+    runner.execute_claimed_run(
+        claimed, config=cfg, now=T0, checkpointer=saver, draft_fn=_D(_valid())
+    )
+    def _boom(*a, **k):
+        raise RuntimeError("simulated race")
+    monkeypatch.setattr(db, "create_workflow_def", _boom)
+    db.set_run_decision(claimed.id, {"action": "approve"})
+    runner.resume_claimed_run(db.claim_next_resumable_run(now=T0), config=cfg, now=T0, checkpointer=saver)
+    done = db.get_run(claimed.id)
+    assert done.status == "failed" and "meta persist failed" in done.error
+    metas = [o for o in db.list_outputs(claimed.id) if o.type == "meta"]
+    assert len(metas) == 1
+    assert metas[0].data["approved"] is False
+    assert any("persist failed" in e for e in metas[0].data["errors"])

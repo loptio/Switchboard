@@ -195,3 +195,25 @@ def test_worker_review_redo_re_suspends(database, tmp_path, monkeypatch):
     assert again.pending_decision is None
     reviews = [o for o in db.list_outputs(claimed.id) if o.type == "review"]
     assert reviews[-1].data["digest"]["items"][0]["one_line_summary"] == "two"
+
+
+def test_review_endpoint_passes_a_meta_proposal_payload_through(client, user):
+    """Phase 9: the review pipe is payload-agnostic — a meta run's proposal payload
+    comes back verbatim from GET /runs/:id/review for the ReviewPanel to render."""
+    login(client)
+    run = db.create_run(workflow="meta", trigger="manual", review=True)
+    payload = {
+        "proposal": {
+            "request": "做一个变体",
+            "workflow_def": {"id": "meta-made", "entry": "summarize"},
+            "agent_defs": [{"id": "stern-summarize"}],
+            "explanation": "克隆并调参",
+            "attempts": 1,
+        }
+    }
+    db.save_output(run.id, "{}", type="review", data=payload)
+    rev = client.get(f"/runs/{run.id}/review", headers=csrf_headers(client))
+    assert rev.status_code == 200
+    p = rev.json()["proposal"]
+    assert p["workflow_def"]["id"] == "meta-made"
+    assert p["request"] == "做一个变体" and p["attempts"] == 1

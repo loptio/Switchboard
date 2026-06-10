@@ -93,12 +93,19 @@ def default_draft_fn(
     feedback: str | None = None,
 ) -> dict:
     """The real drafting seam: gather the palette + taken ids, then run the
-    meta_agent through llm.complete. Tests inject scripted fakes instead."""
+    meta_agent through llm.complete. Tests inject scripted fakes instead.
+
+    The palette's agents are EXTENDED with the DB agent ids so the model is shown
+    the same bindable-agents namespace the validator accepts (review finding: a
+    drafting palette narrower than the validation namespace lets a proposal pass
+    with names the model was never offered)."""
     wf_ids, ag_ids = existing_def_ids()
+    palette = manifest.build_manifest()
+    palette["agents"] = sorted(set(palette["agents"]) | ag_ids)
     return meta_agent.draft_proposal(
         request,
         model=model,
-        palette=manifest.build_manifest(),
+        palette=palette,
         existing_workflow_ids=wf_ids,
         existing_agent_ids=ag_ids,
         prior=prior,
