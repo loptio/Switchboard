@@ -22,7 +22,7 @@
 
 **落地工作流**:
 - MVP 锚点:每天定时抓取指定来源新闻 → 解析 → 推送给我。(✅)
-- 价值验证:一个**真实复杂任务**——多源采集 + 过滤 + 解读 + 逐条反向思考。(⬜ Phase 6)简单简报看不出多代理价值,这个任务才证明它。
+- 价值验证:一个**真实复杂任务**——多源采集 + 过滤 + 解读 + 逐条反向思考。(✅ Phase 6 的 brief 工作流)简单简报看不出多代理价值,这个任务才证明它。
 
 **学习目标**:借这个项目练 agent 工程(记忆、权限、工作区、编排)+ 走一遍软件工程四阶段。
 
@@ -64,12 +64,12 @@
 
 ---
 
-## 3. 核心设计:定义即"一等数据" (⬜ Phase 7 兑现)
+## 3. 核心设计:定义即"一等数据" (✅ Phase 7 数据化 · Phase 8 入库)
 
 **把"agent 定义""工作流定义""排程"做成系统里的一等数据(存 DB),不要写死在代码里。**
 
-- 现状:digest 工作流目前**手写在代码里**(契约 / runner / 模型接缝已干净,但 agent 与工作流尚未数据化)。
-- Phase 7:把它们变成声明式数据;一个**通用编排器**读定义 → 动态构图 → 在 LangGraph 上跑。
+- ✅ Phase 7:定义成为声明式数据;**通用编排器**读定义 → 动态构图 → 在 LangGraph 上跑(digest + brief 已 dogfood 重写)。
+- ✅ Phase 8:定义入 DB(`workflow_defs`/`agent_defs`,DB 覆盖优先、代码内置兜底、内置只读)+ 两道护栏验证 + 网页合成器 CRUD。
 - 以后:meta-agent 不过是**同一份定义数据的另一个写入者**(人 / UI / meta-agent 都往同一张表写)。
 
 这是为未来 meta-agent **现在就留好的缝**:声明式定义 → 谁创建都行。*注:从 ≥2 个真实工作流(digest + 复杂任务)归纳才好定 schema,避免过早抽象——故 Phase 6 先于 Phase 7。*
@@ -84,8 +84,8 @@
 | **Run**(Task) | 一次执行(id、关联工作流、状态、起止、触发方式) | ✅ 状态含 pending/running/success/failed/**awaiting_input** |
 | **Output**(Artifact) | 产出(id、关联 Run、类型、内容) | ✅ |
 | **Schedule** | 排程(id、关联工作流、cron、启用) | ✅ |
-| **AgentDef** | agent 定义(系统提示、允许工具、权限、**provider/model**) | ⬜ Phase 7 |
-| **WorkflowDef** | 工作流定义(步骤序列、每步用哪个 AgentDef、参数) | ⬜ Phase 7 |
+| **AgentDef** | agent 定义(系统提示、允许工具、权限、**provider/model**) | ✅ Phase 7 数据化、Phase 8 入 DB |
+| **WorkflowDef** | 工作流定义(步骤序列、每步用哪个 AgentDef、参数) | ✅ Phase 7 数据化、Phase 8 入 DB |
 | **Event**(Log) | 审计 / 监控 | 🔨 目前以日志为主,结构化 Event 表后补 |
 | **Memory** | 跨 run 长期记忆(后期 pgvector) | ⬜ 推迟(决策 6) |
 | **(LangGraph)checkpoints** | 图执行状态(suspend/resume 用) | ✅ 与上表同库不同表、无 FK,以 `thread_id == run_id` 关联 |
@@ -107,7 +107,8 @@
 目标:系统不绑死某一家(模型无关工程)。**当前定型(决策 8)**:
 
 - **编排引擎 = LangGraph**(系统自建、引擎借用);所有控制流走 LangGraph 的 StateGraph。
-- **模型调用经 `llm.py` 单一接缝**:目前用 Claude Agent SDK、`tools=[]`(即裸模型调用,无 agent harness)。换模型/供应商只动这一处。
+- **模型调用经 `llm.py` 单一接缝**:推理节点用 Claude Agent SDK、`tools=[]`(即裸模型调用,无 agent harness)。换模型/供应商只动这一处。
+- **(Phase 10a 起)coding 家族经第二接缝 `coding_agent.py`** 跨过 `tools=[]` 边界:唯一的 agent-loop SDK 调用者、可注入 fake、有界循环、沙箱 containment(见决策 13)。两接缝纪律相同:SDK 不外漏。
 - **多厂商仍只留缝、用时再接**:真要接非 Claude(或要完整 agentic harness)时,再在 `llm.py` 后面加第二条实现;`AgentDef` 的 `provider/model` 字段(Phase 7)是路由依据。
 
 **原 A/B 岔路的结论**:倾向"全走 LangGraph 编排(Claude 也走),provider 藏在 `llm.py` 之后"。**YAGNI 不变**:先单路径跑通,缝留好,用时再加。
@@ -121,9 +122,9 @@
 - **前端:React + Vite + TypeScript** ✅ — 控制面 UI;响应式覆盖电脑/平板/手机。
 - **调度器:APScheduler** ✅ — 60s 轮询 + DB pending-run 认领(决策 1)。
 - **认证:自托管轻量方案** ✅ — passlib/bcrypt + Starlette SessionMiddleware 签名 cookie + CSRF token(决策 3;比 fastapi-users/Auth0 更轻,单用户够用);全程 HTTPS、bcrypt 哈希。
-- **编排引擎:LangGraph** 🔨 — StateGraph + checkpointer(决策 8);**已采用**,Unit 2 迁移已建·待合并。
-- **Agent 运行时:Claude Agent SDK(Python)** ✅ — 经 `llm.py` 接缝调用;计费走 Agent SDK 额度。
-- **迁移:Alembic** ✅;**测试:pytest**(约 150 项,离线确定性)✅。
+- **编排引擎:LangGraph** ✅ — StateGraph + checkpointer(决策 8);已合并 master,通用编排器在其上构图。
+- **Agent 运行时:Claude Agent SDK(Python)** ✅ — 推理经 `llm.py`、coding 经 `coding_agent.py` 两接缝调用;计费走订阅额度(绝不设 `ANTHROPIC_API_KEY`)。
+- **迁移:Alembic** ✅;**测试:pytest 401 项 + 前端 vitest 39 项**(全离线确定性)✅。
 - **多厂商层(后期才接):LiteLLM / LangGraph 其他 provider** — 见 §5.5,先留缝。
 - **托管:本机 Mac 自托管** 🔨,上云推迟(决策 4)。
 
@@ -146,15 +147,16 @@
 - ✅ **Phase 1** — 后端单工作流端到端(新闻简报:抓取 → 解析 → 产出入库)
 - ✅ **Phase 2** — DB 真相来源 + 调度器 + 邮件通知(定时触发、推送)
 - ✅ **Phase 3** — 控制面 web app(认证 + 看状态/产出 + 排程 + 立即跑;响应式 —— **原 Phase 4 已并入此**)
-- 🔨 **Phase 5** — 多 agent 编排 + LangGraph 引擎 + 人在环
-  - ✅ Unit 1 多代理(总结 → 审查 → 有界重做),已合并 master
-  - ✅ Unit 2 迁到 LangGraph 引擎(行为不变),已建·E2E 过·在 `phase5-langgraph` 已合并
-  - ✅ Unit 3 人在环 suspend/resume 原语(引擎 + CLI),计划已审、已完成
+- ✅ **Phase 5** — 多 agent 编排 + LangGraph 引擎 + 人在环(U1 多代理有界重做 / U2 迁 LangGraph 行为不变 / U3 suspend-resume 原语),全部合并 master
 - ✅ **Phase 6** — 真实复杂任务工作流(多源采集+过滤 / 解读+反向思考 / 组装+E2E,约 2–3 unit)。证明多代理价值;给出第二个真实工作流供 Phase 7 归纳。
 - ✅ **Phase 7** — 工作流与代理"数据化" + 通用编排器(代理即数据 / 工作流定义 schema + 读定义动态构图的通用编排器 / dogfood 重写两个工作流,约 3 unit)。兑现第 3 节。
 - ✅ **Phase 8** — 网页合成器 + 监控 + 网页版人在环 + 工作区(监控+网页人在环 / 合成器 UI / 工作区选择+权限,约 2–3 unit)。
 - ⬜ **Phase 9** — Meta-agent(带护栏)—— 9/10 先后到时再定(约 1–2 unit)。依赖 Phase 7,受益于 Phase 8。
-- ⬜ **Phase 10** — Coding-agent seam(**系统终点**):换 `llm.py(tools=[])` 缝为 Agent SDK / Managed Agents worker + 会话管理 + 沙箱 + 多 agent 对话(Agent Teams / Managed Agents)。正交于 8/9;coding(10) 与 meta-agent(9) 先后到时再定。计量计费 + 沙箱/worktree 安全为已知代价。
+- 🔨 **Phase 10** — Coding-agent(**系统终点**),分片推进:
+  - ✅ **10a** 接缝 + 编码家族:`coding_agent.py`(唯一 agent-loop SDK 调用者、可 fake、有界)+ coding 工作流 + web diff 审核
+  - ✅ **10b-1** 可指挥:每 run task/workspace + git 感知 diff/还原 + clean-tree 前置 + `.git` 拒写
+  - ✅ **10b-2-1** 真 shell + 沙箱(2026-06-11 合并):Bash + 借用 Seatbelt(文件系统→工作区、网络拒、命令超时)+ 命令审计 + `.git` 完整性兜底 + worker 密钥 denylist 擦除(逃逸验收 hands-on 通过)
+  - ⬜ 10b-2 后段(网络细粒度放行、commit/PR 自动化)· 10b-3(会话生命周期 UI)· 10c(多 agent 对话)。前置债:coding 进共享并发 worker 前,env 擦除须改子进程级(见 `coding_agent._scrubbed_env`)
 - ⬜ **(小项,非 phase)Mac-as-server**:常驻服务 + 防休眠 + 可选 Tailscale,让"踢一脚走人、从手机看"落地。上云推迟。
 - (浏览器 / 社媒 agent:按需插入,先过 ToS 合规。)
 
@@ -199,12 +201,13 @@
 | 5 | 新闻源 + 解析 | RSS(目前 Hacker News) | 产出契约 = `Digest(title / link / one_line_summary)`,title/link 从来源定位 |
 | 6 | pgvector 长期记忆 | 推迟 | 待长期记忆需求出现再引入 |
 | 7 | 前端最小范围 | 登录 + 运行看板 + 详情/产出 + 排程 CRUD + 立即跑;响应式 | 见 Phase 3 Unit 2 简报 |
-| 8 | 编排引擎 | **LangGraph**(系统自建、引擎借用) | StateGraph;节点经 `llm.py` 调模型、不直连 SDK;web 层不加载 langgraph(测试守卫);digest 默认不挂 checkpoint。**状态:Unit 2 已建·E2E过·待合并(未上 master)** |
-| 9 | 人在环 suspend/resume | `interrupt()` + checkpointer + `resume-run` CLI | `thread_id == run_id`;PostgresSaver 与 `runs` 同库不同表、无 FK;dict-state(避开 dataclass 易碎序列化);web 化留 Phase 8。**状态:已设计,Unit 3 建造中(未合并)** |
+| 8 | 编排引擎 | **LangGraph**(系统自建、引擎借用) | StateGraph;节点经 `llm.py` 调模型、不直连 SDK;web 层不加载 langgraph(测试守卫);digest 默认不挂 checkpoint。**已合并 master** |
+| 9 | 人在环 suspend/resume | `interrupt()` + checkpointer + `resume-run` CLI | `thread_id == run_id`;PostgresSaver 与 `runs` 同库不同表、无 FK;dict-state(避开 dataclass 易碎序列化);web 化已在 Phase 8 落地。**已合并 master** |
 | 10 | 项目命名 | **Switchboard**(repo `switchboard`) | 内部 `news_digest` 包暂不改名(报告后再重构);叙事:Switchboard 平台,news_digest 是其首个工作流 |
 | 11 | 路线图原则 | 复杂任务(Phase 6)先于数据化(Phase 7) | 从 ≥2 个真实工作流归纳通用 schema,避免过早抽象 |
 | 12 | 构建 vs 买 | 自造差异化、借用通用件 | 编排引擎用 LangGraph(通用、难、已解决的 plumbing);系统设计/契约/配置模型/合成器/meta-agent 自建(差异化 + 学习价值) |
 
-> 状态以代码 + 各阶段简报为准(本表只记"定了什么")。Phase 1–3 与 Phase 5 Unit 1 已落地;Unit 2 待合并、Unit 3 建造中。
-| 13 | 系统终点 | **Switchboard 里的 coding agent(Phase 10)** | 跑会用工具、管会话、能互相对话的 coding agent。实现=换 §5 的 `llm.py(tools=[])` 缝为 Agent SDK / Managed Agents worker + 会话管理 + 沙箱 + 多 agent 协调;激活已留好的 AgentDef.允许工具 + §6 的 Agent SDK 权限/工作区/沙箱。正交于 8/9(依赖 Phase 7 + run/worker 管道,不依赖合成器/meta-agent),放最后是风险排序(最大/最险/计量计费),非依赖 |
+| 13 | 系统终点 | **Switchboard 里的 coding agent(Phase 10)** | 跑会用工具、管会话、能互相对话的 coding agent。实现=新增 `coding_agent.py` 接缝(Agent SDK agent-loop)+ 会话管理 + 沙箱 + 多 agent 协调;激活已留好的 AgentDef.允许工具 + §6 的 Agent SDK 权限/工作区/沙箱。正交于 8/9(依赖 Phase 7 + run/worker 管道,不依赖合成器/meta-agent),放最后是风险排序(最大/最险/计量计费),非依赖 |
 | 14 | Phase 8 通用性约束 | 合成器与数据模型保持节点类型开放 | 将来加 `coding_agent` 节点类型是"加"不是"重写"(Phase 7 的 α 已支持);别写死"只有推理工作流"假设。Phase 8 的监控 + web 人在环为 coding agent 直接复用 |
+
+> 状态以代码 + 各阶段简报为准(本表只记"定了什么")。当前:Phase 0–8 + 10a/10b-1/10b-2-1 已合并 master;Phase 9(meta-agent)与 Phase 10 余下分片未开始 —— 详见 §8 路线图。
