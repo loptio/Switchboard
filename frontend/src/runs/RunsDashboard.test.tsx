@@ -16,7 +16,9 @@ function makeRun(over: Partial<Run> = {}): Run {
     workflow: "news",
     status: "pending",
     trigger: "manual",
-    created_at: "2026-06-08T00:00:00Z",
+    // Must be recent: useRuns hard-stops polling for non-terminal runs older
+    // than 5 minutes, so a fixed date here silently disables the poll loop.
+    created_at: new Date().toISOString(),
     started_at: null,
     finished_at: null,
     error: null,
