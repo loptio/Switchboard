@@ -101,33 +101,37 @@ _AUTH_HINT = (
 
 # ENV SCRUBBING (Phase 10b-2 escape-test fix). The sandbox governs FILES + NETWORK, not
 # the environment — and the SDK spawns the CLI with `{**os.environ, **options.env}`
-# (subprocess_cli.py), so a sandboxed bash would otherwise inherit EVERY worker secret
-# (SECRET_KEY, SMTP_PASSWORD, LLM API keys). Those would exfiltrate via the model channel
-# (a command's output is fed back as a tool_result) or the diff/output — which network
-# deny cannot stop. So the agent's CLI sees only a minimal ALLOWLIST. Subscription auth
-# lives in ~/.claude, reached via HOME (kept), not env — so scrubbing must not break it.
-_ENV_ALLOWLIST = ("PATH", "HOME", "LANG")
+# (subprocess_cli.py, a MERGE: options.env can ADD but not REMOVE inherited keys). So a
+# sandboxed bash would otherwise inherit EVERY worker secret (SECRET_KEY, SMTP_PASSWORD,
+# LLM API keys, the DB URL). Those exfiltrate via the model channel (a command's output
+# returns as a tool_result) or the diff/output — which network deny cannot stop.
+#
+# We DENYLIST (not allowlist) the secret-shaped keys: an allowlist starved the CLI's
+# subscription auth ("Not logged in" — it needs more of the env than PATH/HOME, e.g. the
+# macOS security-session vars), so we keep the CLI's environment INTACT and remove only
+# the secrets. Subscription auth (via ~/.claude / keychain) keeps everything it needs.
+# A key is a secret if its name contains one of these (case-insensitive) or is named
+# explicitly below. `SESSION`/`AUTH` are deliberately NOT patterns — they match the macOS
+# auth/session vars the CLI needs. The user re-verifies hands-on that no secret leaks.
+_ENV_SECRET_SUBSTRINGS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "PASSWD", "PASSPHRASE", "CREDENTIAL")
+_ENV_SECRET_NAMES = ("DATABASE_URL",)  # secrets whose name isn't secret-shaped
 
 
-def _clean_env() -> dict[str, str]:
-    """The minimal allowlist environment for the sandboxed CLI + shell: PATH/HOME/LANG,
-    any LC_* (locale), and the per-command bash timeouts — nothing else. No worker secret
-    can ride along. Read from the current process env at call time."""
-    out: dict[str, str] = {k: os.environ[k] for k in _ENV_ALLOWLIST if k in os.environ}
-    out.update({k: v for k, v in os.environ.items() if k.startswith("LC_")})
-    out["BASH_DEFAULT_TIMEOUT_MS"] = str(DEFAULT_BASH_TIMEOUT_MS)
-    out["BASH_MAX_TIMEOUT_MS"] = str(MAX_BASH_TIMEOUT_MS)
-    return out
+def _is_secret_env(name: str) -> bool:
+    """Whether an env var name looks like a secret that must not reach the sandboxed shell."""
+    upper = name.upper()
+    return name in _ENV_SECRET_NAMES or any(s in upper for s in _ENV_SECRET_SUBSTRINGS)
 
 
 @contextlib.contextmanager
-def _minimal_env():
-    """Run the wrapped block with `os.environ` reduced to the allowlist, then restore it.
+def _scrubbed_env():
+    """Run the wrapped block with the worker's SECRETS removed from `os.environ`, then
+    restore it. Keeps everything else (so the CLI's subscription auth still works) and
+    drops only secret-shaped keys (so the sandboxed bash can't read them).
 
     LOAD-BEARING: the SDK inherits `os.environ` wholesale into the CLI subprocess, and
-    `options.env` is only an OVERLAY (it cannot REMOVE inherited keys). So we scrub the
-    process env for the duration of the (blocking, single-threaded) SDK call so the
-    spawned CLI — and the bash it sandboxes — never see the worker's secrets. Restored
+    `options.env` is only an OVERLAY (it cannot REMOVE inherited keys). So we pop the
+    secrets here for the duration of the (blocking, single-threaded) SDK call. Restored
     in `finally` even if the SDK errors.
 
     CONCURRENCY CONSTRAINT (known, not a leak — a correctness limit): this mutates the
@@ -140,15 +144,21 @@ def _minimal_env():
     SMTP_PASSWORD): that run would see the scrubbed env and fail. When coding runs move
     into a shared concurrent worker, fix it then — run coding solo in the worker, or make
     the clean env SUBPROCESS-level (don't touch the shared os.environ)."""
-    saved = dict(os.environ)
-    clean = _clean_env()  # compute from the FULL env before clearing (keeps PATH/HOME)
-    os.environ.clear()
-    os.environ.update(clean)
+    secrets = {k: os.environ[k] for k in list(os.environ) if _is_secret_env(k)}
+    for k in secrets:
+        os.environ.pop(k, None)
     try:
         yield
     finally:
-        os.environ.clear()
-        os.environ.update(saved)
+        os.environ.update(secrets)
+
+
+def _bash_env() -> dict[str, str]:
+    """The per-command bash timeouts the bundled CLI enforces (passed via options.env)."""
+    return {
+        "BASH_DEFAULT_TIMEOUT_MS": str(DEFAULT_BASH_TIMEOUT_MS),
+        "BASH_MAX_TIMEOUT_MS": str(MAX_BASH_TIMEOUT_MS),
+    }
 
 
 @dataclass(frozen=True)
@@ -334,10 +344,10 @@ def _build_options(
             "excludedCommands": [],  # nothing runs outside it (not even git/docker)
             # no "allowedDomains" -> network DENIED by default (decision E)
         },
-        # Phase 10b-2 — a minimal ALLOWLIST env (no worker secrets); includes the
-        # per-command bash timeouts the bundled CLI enforces (decision D). Belt to the
-        # `_minimal_env()` suspenders in run_coding_agent (the SDK merges over os.environ).
-        env=_clean_env(),
+        # Phase 10b-2 — the per-command bash timeouts (decision D). The worker's SECRETS
+        # are removed from the inherited env by `_scrubbed_env()` in run_coding_agent (the
+        # SDK merges options.env OVER os.environ, so the scrub must happen there).
+        env=_bash_env(),
     )
 
 
@@ -404,9 +414,10 @@ def run_coding_agent(
         max_tool_calls=max_tool_calls, max_budget_usd=max_budget_usd, counter=counter,
     )
     try:
-        # Scrub the worker's secrets out of the process env for the duration of the SDK
-        # call, so the sandboxed bash never inherits them (the sandbox does not cover env).
-        with _minimal_env():
+        # Remove the worker's secrets from the process env for the duration of the SDK
+        # call, so the sandboxed bash never inherits them (the sandbox does not cover env);
+        # the CLI keeps the rest of its environment, so subscription auth still works.
+        with _scrubbed_env():
             messages = anyio.run(_arun, prompt, options)
     except Exception as exc:
         log.exception("coding agent run failed")
