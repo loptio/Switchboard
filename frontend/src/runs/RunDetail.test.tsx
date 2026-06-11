@@ -163,11 +163,11 @@ describe("RunDetail", () => {
     expect(screen.getByText(/delivery failed/i)).toBeInTheDocument();
   });
 
-  it("shows the auto-commit hash (Phase 10b-2)", async () => {
+  it("shows the auto-commit hash + friendly reviewer verdict (Phase 10b-2/10c)", async () => {
     vi.mocked(getRun).mockResolvedValue({
       ...SUCCESS_RUN,
       workflow: "coding",
-      meta: { commit: "a1b2c3d" },
+      meta: { commit: "a1b2c3d", verdict: "reviewer:approved" },
     });
     vi.mocked(getRunOutput).mockResolvedValue([]);
 
@@ -175,6 +175,8 @@ describe("RunDetail", () => {
 
     expect(await screen.findByText("Commit")).toBeInTheDocument();
     expect(screen.getByText("a1b2c3d")).toBeInTheDocument();
+    // the raw "reviewer:approved" renders as a friendly label
+    expect(screen.getByText(/auto-reviewer approved/i)).toBeInTheDocument();
   });
 
   it("draws the workflow graph and overlays live per-node status", async () => {

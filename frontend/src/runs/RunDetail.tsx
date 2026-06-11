@@ -19,6 +19,8 @@ const VERDICT_LABEL: Record<string, string> = {
   accepted_at_cap: "⚠ Accepted with open issues",
   inconclusive: "⚠ Verification inconclusive",
   human_approved: "✓ Human-approved",
+  "reviewer:approved": "✓ Auto-reviewer approved",
+  "reviewer:not_converged": "⚠ Auto-reviewer: not converged",
 };
 const EMAIL_LABEL: Record<string, string> = {
   sent: "✓ Sent",
