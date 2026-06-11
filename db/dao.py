@@ -157,6 +157,21 @@ def update_run_status(
     return Run.from_row(row)
 
 
+def set_run_meta(run_id: str, meta: dict) -> Run:
+    """Set a Run's observability `meta` (Phase 11): {verdict, email, ...}. Overwrites
+    the column with `meta`. Returns the Run; raises LookupError if missing. Separate
+    from status writes so it can be recorded after mark_success (email is attempted
+    after the run is already marked successful — graceful degradation)."""
+    if not _is_uuid(run_id):
+        raise LookupError(f"No run with id {run_id!r}")
+    with get_engine().begin() as conn:
+        result = conn.execute(update(runs).where(runs.c.id == run_id).values(meta=meta))
+        if result.rowcount == 0:
+            raise LookupError(f"No run with id {run_id!r}")
+        row = conn.execute(select(runs).where(runs.c.id == run_id)).mappings().one()
+    return Run.from_row(row)
+
+
 def mark_running(run_id: str, *, now: datetime | None = None) -> Run:
     """Convenience: status -> running, stamp started_at."""
     return update_run_status(run_id, "running", started_at=now or _now())

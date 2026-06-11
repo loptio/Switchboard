@@ -42,6 +42,8 @@ class Run:
     # (CODING_TASK / CODING_WORKSPACE), preserving 10a's global-task behaviour.
     coding_task: str | None = None
     coding_workspace: str | None = None
+    # Phase 11 observability: {verdict, email} run-level metadata (NULL if none).
+    meta: dict | None = None
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> "Run":
@@ -58,6 +60,7 @@ class Run:
             pending_decision=row["pending_decision"],
             coding_task=row["coding_task"],
             coding_workspace=row["coding_workspace"],
+            meta=row["meta"],
         )
 
 

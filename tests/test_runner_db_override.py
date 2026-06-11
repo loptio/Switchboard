@@ -60,8 +60,8 @@ def test_runner_threads_wf_none_for_code_default_and_def_for_override(
     captured: dict = {}
     monkeypatch.setattr(runner, "fetch_feed", lambda url: list(ITEMS))
     monkeypatch.setattr(
-        runner, "build_digest",
-        lambda items, n, model, **kw: (captured.update(kw), _digest("x"))[1],
+        runner, "build_digest_with_verdict",
+        lambda items, n, model, **kw: (captured.update(kw), (_digest("x"), "passed"))[1],
     )
     monkeypatch.setattr(runner, "send_digest", lambda d: None)
     monkeypatch.setattr(runner, "write_digest", lambda *a, **k: None)

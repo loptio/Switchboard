@@ -29,6 +29,7 @@ from .dao import (
     mark_running,
     mark_schedule_ran,
     mark_success,
+    set_run_meta,
     save_output,
     set_run_decision,
     clear_run_decision,
@@ -77,6 +78,7 @@ __all__ = [
     "set_run_decision",
     "clear_run_decision",
     "claim_next_resumable_run",
+    "set_run_meta",
     # outputs
     "save_output",
     "list_outputs",

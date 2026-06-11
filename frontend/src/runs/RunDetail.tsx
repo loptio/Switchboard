@@ -12,6 +12,20 @@ import { RunStatusBadge } from "./RunStatusBadge";
 import { useRun } from "./useRun";
 import styles from "./RunDetail.module.css";
 
+// Phase 11 observability: human-friendly labels for the run's quality verdict +
+// email delivery status (RunOut.meta).
+const VERDICT_LABEL: Record<string, string> = {
+  passed: "✓ Passed review",
+  accepted_at_cap: "⚠ Accepted with open issues",
+  inconclusive: "⚠ Verification inconclusive",
+  human_approved: "✓ Human-approved",
+};
+const EMAIL_LABEL: Record<string, string> = {
+  sent: "✓ Sent",
+  skipped: "— Not configured",
+  failed: "✕ Delivery failed",
+};
+
 export function RunDetail() {
   const { id = "" } = useParams();
   const { run, outputs, review, definition, nodeStatuses, loading, error, notFound, reload } =
@@ -77,6 +91,18 @@ export function RunDetail() {
           <dt>Finished</dt>
           <dd>{formatTime(run.finished_at)}</dd>
         </div>
+        {run.meta?.verdict && (
+          <div>
+            <dt>Quality</dt>
+            <dd>{VERDICT_LABEL[run.meta.verdict] ?? run.meta.verdict}</dd>
+          </div>
+        )}
+        {run.meta?.email && (
+          <div>
+            <dt>Email</dt>
+            <dd>{EMAIL_LABEL[run.meta.email] ?? run.meta.email}</dd>
+          </div>
+        )}
       </dl>
 
       {run.error && <ErrorBanner message={run.error} />}

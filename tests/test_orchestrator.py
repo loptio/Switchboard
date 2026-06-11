@@ -262,3 +262,49 @@ def test_large_max_redos_stays_bounded_and_within_recursion_limit():
     out = build_digest(ITEMS, 2, "m", max_redos=5, summarize_fn=s, verify_fn=v)
     assert out == _digest("d6")
     assert len(s.calls) == 6 and len(v.calls) == 6
+
+
+# --- Phase 11 observability: build_digest_with_verdict ----------------------
+
+def test_verdict_passed():
+    from orchestrator import build_digest_with_verdict
+
+    digest, verdict = build_digest_with_verdict(
+        ITEMS, 2, "m", summarize_fn=FakeSummarizer(_digest("d1")), verify_fn=FakeVerifier(PASS)
+    )
+    assert verdict == "passed" and digest.items[0].one_line_summary == "d1"
+
+
+def test_verdict_accepted_at_cap():
+    from orchestrator import build_digest_with_verdict
+
+    # verifier rejects every attempt → redo budget exhausted → accept last
+    s = FakeSummarizer(_digest("d1"), _digest("d2"), _digest("d3"))
+    v = FakeVerifier(_fail(), _fail(), _fail())
+    digest, verdict = build_digest_with_verdict(
+        ITEMS, 2, "m", max_redos=2, summarize_fn=s, verify_fn=v
+    )
+    assert verdict == "accepted_at_cap"
+
+
+def test_verdict_inconclusive():
+    from orchestrator import build_digest_with_verdict
+
+    # verifier never produces a valid review (malformed) → inconclusive, accept digest
+    s = FakeSummarizer(_digest("d1"))
+    v = FakeVerifier(AgentContractError("bad1"), AgentContractError("bad2"))
+    digest, verdict = build_digest_with_verdict(ITEMS, 2, "m", summarize_fn=s, verify_fn=v)
+    assert verdict == "inconclusive"
+
+
+def test_verdict_empty_input_is_none():
+    from orchestrator import build_digest_with_verdict
+
+    digest, verdict = build_digest_with_verdict([], 2, "m")
+    assert digest.items == [] and verdict is None
+
+
+def test_build_digest_still_returns_just_a_digest():
+    # The legacy contract is unchanged — build_digest drops the verdict.
+    out = build_digest(ITEMS, 2, "m", summarize_fn=FakeSummarizer(_digest("d1")), verify_fn=FakeVerifier(PASS))
+    assert isinstance(out, Digest) and out.items[0].one_line_summary == "d1"

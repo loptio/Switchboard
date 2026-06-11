@@ -80,6 +80,11 @@ runs = Table(
     # workflows.
     Column("coding_task", Text, nullable=True),
     Column("coding_workspace", Text, nullable=True),
+    # Phase 11 observability: run-level metadata beyond status — the digest review
+    # verdict (passed / accepted_at_cap / inconclusive / human_approved) and the email
+    # delivery outcome (sent / skipped / failed). Nullable JSON so it is purely
+    # additive; a run that records nothing leaves it NULL.
+    Column("meta", _JSON, nullable=True),
     CheckConstraint(_in_list("status", RUN_STATUSES), name="ck_runs_status"),
     CheckConstraint(_in_list("trigger", RUN_TRIGGERS), name="ck_runs_trigger"),
 )

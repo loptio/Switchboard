@@ -52,8 +52,12 @@ def _raise(msg):
 def fake_pipeline(monkeypatch):
     monkeypatch.setattr(runner, "fetch_feed", lambda url: FAKE_ITEMS)
     # The runner now calls the orchestrator (summarize+verify); same I/O contract.
-    # **kw absorbs the language-bound summarize_fn the runner injects.
-    monkeypatch.setattr(runner, "build_digest", lambda items, n, model, **kw: FAKE_DIGEST)
+    # **kw absorbs the language-bound summarize_fn the runner injects. Phase 11: the
+    # runner calls build_digest_with_verdict → (digest, verdict).
+    monkeypatch.setattr(
+        runner, "build_digest_with_verdict",
+        lambda items, n, model, **kw: (FAKE_DIGEST, "passed"),
+    )
 
 
 def test_run_once_success(database, fake_pipeline, tmp_path, monkeypatch):
@@ -221,7 +225,8 @@ def test_workflow_dispatch_picks_the_right_pipeline(database, tmp_path, monkeypa
     called = []
     monkeypatch.setattr(runner, "fetch_feed", lambda url: FAKE_ITEMS)
     monkeypatch.setattr(
-        runner, "build_digest", lambda items, n, model, **kw: called.append("digest") or FAKE_DIGEST
+        runner, "build_digest_with_verdict",
+        lambda items, n, model, **kw: (called.append("digest") or FAKE_DIGEST, "passed"),
     )
     monkeypatch.setattr(runner, "gather_sources", lambda: FAKE_SOURCE_ITEMS)
     monkeypatch.setattr(
@@ -235,3 +240,31 @@ def test_workflow_dispatch_picks_the_right_pipeline(database, tmp_path, monkeypa
     runner.run_once(workflow="digest", config=_cfg(tmp_path), now=T0)  # legacy alias of digest
 
     assert called == ["digest", "brief", "digest"]
+
+
+# --- Phase 11 observability: run meta (verdict + email status) --------------
+
+def test_run_meta_records_verdict_and_email_skipped(database, fake_pipeline, tmp_path, monkeypatch):
+    # SMTP not configured (the offline default) → email "skipped"; verdict from the
+    # (faked) pipeline is "passed".
+    monkeypatch.setattr(runner, "send_digest", lambda d: None)
+    monkeypatch.setattr(runner, "email_configured", lambda: False)
+    run = runner.run_once(config=_cfg(tmp_path), now=T0)
+    assert run.status == "success"
+    stored = db.get_run(run.id)
+    assert stored.meta == {"verdict": "passed", "email": "skipped"}
+
+
+def test_run_meta_email_sent_when_configured(database, fake_pipeline, tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "send_digest", lambda d: None)
+    monkeypatch.setattr(runner, "email_configured", lambda: True)
+    run = runner.run_once(config=_cfg(tmp_path), now=T0)
+    assert db.get_run(run.id).meta == {"verdict": "passed", "email": "sent"}
+
+
+def test_run_meta_email_failed_is_recorded(database, fake_pipeline, tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "send_digest", _raise("smtp down"))
+    run = runner.run_once(config=_cfg(tmp_path), now=T0)
+    # Run still success (graceful), but the meta records the delivery failure.
+    assert run.status == "success"
+    assert db.get_run(run.id).meta == {"verdict": "passed", "email": "failed"}

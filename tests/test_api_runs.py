@@ -54,6 +54,19 @@ def test_get_run_by_id_and_404(client, user):
     assert client.get("/runs/00000000-0000-0000-0000-000000000000").status_code == 404
 
 
+def test_run_out_exposes_observability_meta(client, user):
+    # Phase 11: RunOut surfaces the run's {verdict, email} meta for the UI.
+    run = db.create_run(workflow="news", trigger="manual")
+    db.mark_success(run.id)
+    db.set_run_meta(run.id, {"verdict": "passed", "email": "skipped"})
+    login(client)
+    body = client.get(f"/runs/{run.id}").json()
+    assert body["meta"] == {"verdict": "passed", "email": "skipped"}
+    # a run with no meta reports null (additive, back-compat).
+    bare = db.create_run(workflow="news", trigger="manual")
+    assert client.get(f"/runs/{bare.id}").json()["meta"] is None
+
+
 def test_get_run_output(client, user):
     run = _seed_success_run(content="# Digest\nthe news")
     login(client)

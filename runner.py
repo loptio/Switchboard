@@ -55,8 +55,14 @@ from coding_orchestrator import (
 )
 from config import Config, load_config
 from fetch import fetch_feed
+from mailer import is_configured as email_configured
 from mailer import send_brief, send_digest
-from orchestrator import ReviewOutcome, build_digest, resume_review_run, start_review_run
+from orchestrator import (
+    ReviewOutcome,
+    build_digest_with_verdict,
+    resume_review_run,
+    start_review_run,
+)
 import manifest
 import meta_agent
 from meta_orchestrator import (
@@ -154,14 +160,47 @@ def _brief_to_data(brief: Brief) -> dict:
     return {"date": brief.date, "items": [asdict(item) for item in brief.items]}
 
 
-def _finalize(run: db.Run, digest: Digest, cfg: Config, now: datetime | None) -> db.Run:
+# --- observability (Phase 11): email delivery status + run meta -------------
+def _deliver(send_fn, payload, run_id: str, kind: str) -> str:
+    """Attempt an email delivery; return its status for the run meta. send_* skip
+    silently when SMTP is unconfigured and only raise on an actual failure, so a
+    no-exception result is 'sent' (configured) vs 'skipped' (not) — never masking a
+    failure. Never raises (the artifact is already saved; delivery is a side channel)."""
+    try:
+        send_fn(payload)
+    except Exception as exc:  # noqa: BLE001 — delivery never fails the run
+        log.warning("run %s: email delivery failed (%s still saved): %s", run_id, kind, exc)
+        return "failed"
+    return "sent" if email_configured() else "skipped"
+
+
+def _record_meta(run_id: str, *, verdict: str | None = None, email: str | None = None) -> None:
+    """Persist run-level observability meta (best-effort — bookkeeping never fails a
+    run). Only includes the keys provided."""
+    meta: dict = {}
+    if verdict is not None:
+        meta["verdict"] = verdict
+    if email is not None:
+        meta["email"] = email
+    if not meta:
+        return
+    try:
+        db.set_run_meta(run_id, meta)
+    except Exception:  # noqa: BLE001
+        log.warning("run %s: failed to record observability meta", run_id, exc_info=True)
+
+
+def _finalize(
+    run: db.Run, digest: Digest, cfg: Config, now: datetime | None, *, verdict: str | None = None
+) -> db.Run:
     """Finish a run from a final `digest`: render → write local file → save Output
-    → mark success → email (graceful). Shared by the normal completion path and the
-    human-in-the-loop resume path.
+    → mark success → email (graceful) → record meta. Shared by the normal completion
+    path and the human-in-the-loop resume path.
 
     Never raises: a render/write/store failure is recorded (status=failed) and the
     failed Run returned. Email is a side delivery — the digest is already saved and
-    the run is success; a failure there is logged, never fatal.
+    the run is success; a failure there is logged, never fatal. `verdict` (Phase 11)
+    is the review outcome, persisted onto the Run with the email delivery status.
     """
     try:
         day = now.date() if now is not None else date.today()
@@ -181,20 +220,17 @@ def _finalize(run: db.Run, digest: Digest, cfg: Config, now: datetime | None) ->
         return db.mark_failed(run.id, str(exc), now=now)
 
     final = db.mark_success(run.id, now=now)
-    log.info("run %s succeeded (%d items)", run.id, len(digest.items))
-    try:
-        send_digest(digest)
-    except Exception as exc:
-        log.warning(
-            "run %s: email delivery failed (digest still saved): %s", run.id, exc
-        )
+    log.info("run %s succeeded (%d items, verdict=%s)", run.id, len(digest.items), verdict)
+    email = _deliver(send_digest, digest, run.id, "digest")
+    _record_meta(run.id, verdict=verdict, email=email)
     return final
 
 
 def _finalize_brief(run: db.Run, brief: Brief, cfg: Config, now: datetime | None) -> db.Run:
     """Finish a brief run: render → write local file → save Output → mark success →
-    email (graceful). The brief counterpart of `_finalize`, reusing the same
-    render/store/email pipeline (different renderer + Output type). Never raises."""
+    email (graceful) → record meta. The brief counterpart of `_finalize`, reusing the
+    same render/store/email pipeline (different renderer + Output type). The brief has
+    no verifier, so it records only the email status (no verdict). Never raises."""
     try:
         day = now.date() if now is not None else date.today()
         markdown = render_brief_markdown(brief)
@@ -206,12 +242,8 @@ def _finalize_brief(run: db.Run, brief: Brief, cfg: Config, now: datetime | None
 
     final = db.mark_success(run.id, now=now)
     log.info("run %s succeeded (%d items)", run.id, len(brief.items))
-    try:
-        send_brief(brief)
-    except Exception as exc:
-        log.warning(
-            "run %s: email delivery failed (brief still saved): %s", run.id, exc
-        )
+    email = _deliver(send_brief, brief, run.id, "brief")
+    _record_meta(run.id, email=email)
     return final
 
 
@@ -224,11 +256,13 @@ def _run_digest_pipeline(
         # output language; one_line_summary is written in that language while
         # title/link stay verbatim from the source. wf_arg=None => the module graph.
         agent_fns = _agent_fns_for(wf, cfg)
-        digest = build_digest(items, cfg.count, cfg.model, wf=wf_arg, **agent_fns)
+        digest, verdict = build_digest_with_verdict(
+            items, cfg.count, cfg.model, wf=wf_arg, **agent_fns
+        )
     except Exception as exc:
         log.exception("run %s failed", run.id)
         return db.mark_failed(run.id, str(exc), now=now)
-    return _finalize(run, digest, cfg, now)
+    return _finalize(run, digest, cfg, now, verdict=verdict)
 
 
 def _run_brief_pipeline(
@@ -610,7 +644,8 @@ def _apply_outcome(
         suspended = db.mark_awaiting_input(run.id)
         log.info("run %s suspended for human review (awaiting_input)", run.id)
         return suspended, outcome
-    return _finalize(run, outcome.digest, cfg, now), outcome
+    # A human approved this digest at the review gate (Phase 11 verdict).
+    return _finalize(run, outcome.digest, cfg, now, verdict="human_approved"), outcome
 
 
 def _apply_coding_outcome(run: db.Run, outcome, cfg: Config, now: datetime | None) -> db.Run:

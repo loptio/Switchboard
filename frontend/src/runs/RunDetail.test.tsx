@@ -150,6 +150,19 @@ describe("RunDetail", () => {
     expect(screen.getByText(/hooks\/pre-commit/)).toBeInTheDocument();
   });
 
+  it("shows the run's quality verdict and email delivery status (Phase 11)", async () => {
+    vi.mocked(getRun).mockResolvedValue({
+      ...SUCCESS_RUN,
+      meta: { verdict: "accepted_at_cap", email: "failed" },
+    });
+    vi.mocked(getRunOutput).mockResolvedValue([DIGEST]);
+
+    renderDetail();
+
+    expect(await screen.findByText(/accepted with open issues/i)).toBeInTheDocument();
+    expect(screen.getByText(/delivery failed/i)).toBeInTheDocument();
+  });
+
   it("draws the workflow graph and overlays live per-node status", async () => {
     const events: NodeEvent[] = [
       { node_id: "summarize", status: "done", seq: 0, at: "2026-06-08T00:00:01Z" },

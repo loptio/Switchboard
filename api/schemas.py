@@ -56,6 +56,8 @@ class RunOut(BaseModel):
     started_at: datetime | None
     finished_at: datetime | None
     error: str | None
+    # Phase 11 observability: {verdict, email} — run quality + delivery, NULL if none.
+    meta: dict[str, Any] | None = None
 
 
 class OutputOut(BaseModel):

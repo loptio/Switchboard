@@ -9,6 +9,12 @@ export type RunStatus =
   | "awaiting_input";
 export type RunTrigger = "scheduled" | "manual";
 
+// Phase 11 observability: run-level quality + delivery, surfaced on RunOut.meta.
+export interface RunMeta {
+  verdict?: string; // passed | accepted_at_cap | inconclusive | human_approved
+  email?: string; // sent | skipped | failed
+}
+
 export interface Run {
   id: string;
   workflow: string;
@@ -18,6 +24,7 @@ export interface Run {
   started_at: string | null;
   finished_at: string | null;
   error: string | null;
+  meta?: RunMeta | null;
 }
 
 export interface Output {

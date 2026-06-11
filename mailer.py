@@ -67,6 +67,13 @@ def _present(key: str) -> bool:
     return bool(_env(key))
 
 
+def is_configured() -> bool:
+    """Whether SMTP is fully configured (all required vars present). Lets the runner
+    label a no-exception delivery as 'sent' (configured) vs 'skipped' (not), since
+    send_* silently skip when unconfigured and only raise on an actual send failure."""
+    return all(_present(k) for k in _REQUIRED_KEYS)
+
+
 def _config_from_env() -> _SmtpConfig:
     """Build the config (all required keys are present by the time this runs)."""
     port_raw = _env("SMTP_PORT")

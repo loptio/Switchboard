@@ -200,6 +200,7 @@ class _State(TypedDict):
     result: dict | None  # serialized Digest — set only by a terminal node; the answer
     review: bool  # human-in-the-loop gate on? (digest default: False)
     approved: bool  # has the human approved the current digest?
+    verdict: str | None  # Phase 11 observability: passed / accepted_at_cap / inconclusive
 
 
 def _summarize_node(state: _State, config) -> dict:
@@ -237,12 +238,12 @@ def _verify_node(state: _State, config) -> dict:
             "summarizer-validated digest",
             attempt,
         )
-        return {"result": state["digest"], "feedback": None}
+        return {"result": state["digest"], "feedback": None, "verdict": "inconclusive"}
     if critique.passed:
         # Clean pass — clear any stale feedback from earlier redos so a human-review
         # gate shows zero open issues.
         log.info("digest accepted on attempt %d", attempt)
-        return {"result": state["digest"], "feedback": None}
+        return {"result": state["digest"], "feedback": None, "verdict": "passed"}
     log.info(
         "digest rejected on attempt %d (%d issue(s)); redoing",
         attempt,
@@ -260,7 +261,7 @@ def _accept_last_node(state: _State) -> dict:
         state["max_redos"],
         _summarize_issues(feedback),
     )
-    return {"result": state["digest"]}
+    return {"result": state["digest"], "verdict": "accepted_at_cap"}
 
 
 def _finalize_gate_node(state: _State) -> dict:
@@ -398,6 +399,7 @@ def _initial_state(
         "result": None,
         "review": review,
         "approved": False,
+        "verdict": None,
     }
 
 
@@ -424,8 +426,32 @@ def build_digest(
     (items, n, model) → Digest contract. Internally invokes the LangGraph app
     (no checkpointer); see the module docstring for the control flow.
     """
+    digest, _verdict = build_digest_with_verdict(
+        items, n, model,
+        max_redos=max_redos, summarize_fn=summarize_fn, verify_fn=verify_fn, wf=wf,
+    )
+    return digest
+
+
+def build_digest_with_verdict(
+    items: list[FeedItem],
+    n: int,
+    model: str,
+    *,
+    max_redos: int = DEFAULT_MAX_REDOS,
+    summarize_fn: Callable[..., Digest] = summarize_agent,
+    verify_fn: Callable[..., Critique] = verify_agent,
+    wf: WorkflowDef | None = None,
+) -> tuple[Digest, str | None]:
+    """Like `build_digest`, but also returns the review VERDICT (Phase 11
+    observability): 'passed' (verifier approved), 'accepted_at_cap' (redo budget
+    exhausted, accepted the last valid digest with open issues), or 'inconclusive'
+    (the verifier never produced a valid review). None for the empty-input
+    short-circuit. The runner persists this onto the Run so the UI can show digest
+    *quality*, not just success/failed. `build_digest` delegates here and drops it,
+    so its (items, n, model) → Digest contract — and every test of it — is unchanged."""
     if not items:
-        return Digest(items=[])  # short-circuit: no model/graph work for empty input
+        return Digest(items=[]), None  # short-circuit: no model/graph work
 
     app = _APP if wf is None else _builder_for(wf).compile()
     config = {
@@ -440,7 +466,7 @@ def build_digest(
             "summarizer never produced a schema-valid digest after "
             f"{max_redos + 1} attempt(s)"
         )
-    return _digest_from_dict(final["result"])
+    return _digest_from_dict(final["result"]), final.get("verdict")
 
 
 # --- human-in-the-loop: interruptible runs (Phase 5 Unit 3) -----------------
