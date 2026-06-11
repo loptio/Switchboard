@@ -6,17 +6,20 @@
        (8000 is taken by another local project). Remote access goes through
        Tailscale (see deploy/README) — never bind this to 0.0.0.0 directly.
        __PROJECT_DIR__ is rewritten by install.sh.
-       The caffeinate wrapper is LOAD-BEARING beyond sleep: a launchd agent's TCC
-       "responsible process" is its executable, and a bare (non-Apple) python is
-       denied ~/Documents — the worker proved the caffeinate-wrapped form reads the
-       project dir fine while the unwrapped API crash-looped on pyvenv.cfg. -->
+       Invoke `python -m uvicorn`, NOT the .venv/bin/uvicorn script: under launchd a
+       shebang SCRIPT and a direct BINARY get different TCC responsible-process
+       attribution, and the script path was denied ~/Documents (PermissionError on
+       pyvenv.cfg) while the worker's direct .venv/bin/python launched fine. Same
+       binary as the worker now. caffeinate -i also keeps the Mac awake on AC. -->
   <key>Label</key>
   <string>com.switchboard.api</string>
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/caffeinate</string>
     <string>-i</string>
-    <string>__PROJECT_DIR__/.venv/bin/uvicorn</string>
+    <string>__PROJECT_DIR__/.venv/bin/python</string>
+    <string>-m</string>
+    <string>uvicorn</string>
     <string>api.app:app</string>
     <string>--host</string>
     <string>127.0.0.1</string>
