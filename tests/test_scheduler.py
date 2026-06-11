@@ -88,3 +88,7 @@ def test_build_scheduler_arms_single_heartbeat():
     jobs = sched.get_jobs()
     assert len(jobs) == 1
     assert jobs[0].id == "heartbeat"
+    # The heartbeat is interactive-paced so web triggers/approvals are picked up in
+    # seconds, not a minute, while staying a single (sequential) job.
+    assert jobs[0].trigger.interval.total_seconds() == scheduler.TICK_SECONDS
+    assert scheduler.TICK_SECONDS <= 10

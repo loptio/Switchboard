@@ -1,11 +1,20 @@
 """Scheduler — the worker heartbeat: fire due schedules AND drain pending runs.
 
 Model (route A): a single APScheduler interval job ticks every TICK_SECONDS. Each
-tick does two things: run_due_schedules(now) fires scheduled workflows whose time
-has come, and run_pending_runs(now) drains any pending runs the web tier enqueued
-as manual triggers (the handoff). Each due schedule (db.list_due_schedules) runs
+tick does three things: run_due_schedules(now) fires scheduled workflows whose time
+has come, run_pending_runs(now) drains any pending runs the web tier enqueued as
+manual triggers (the handoff), and run_resuming_runs(now) applies web approve/redo
+decisions on awaiting_input runs. Each due schedule (db.list_due_schedules) runs
 once and its next_run_at is advanced to the next cron fire STRICTLY AFTER now — so
 a process that missed several windows catches up exactly once, not N times.
+
+The tick is INTERACTIVE-paced (a few seconds), not minute-paced: a web "Run now"
+or a review approve/redo is a pending/resumable row the worker must pick up, and a
+60s wait per click made the UI feel stuck. ONE job keeps execution strictly
+sequential (no overlap), which the coding family relies on — its env-scrub mutates
+the process-global os.environ for the run window, so a concurrent env-reading run
+(e.g. a digest emailing via SMTP_PASSWORD) must never overlap it. Faster cron is a
+free side benefit: a due schedule now fires within TICK_SECONDS of its minute.
 
 The DB is the source of truth: schedules can be added/removed without restarting
 (picked up on the next tick). All timing logic lives in pure functions with an
@@ -15,6 +24,7 @@ injectable `now`, so tests use mock time and never wait on the real clock.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -25,7 +35,12 @@ from cronutil import compute_next_run  # SDK-free cron math, shared with the API
 
 log = logging.getLogger(__name__)
 
-TICK_SECONDS = 60  # heartbeat granularity; fine for cron down to the minute
+# Heartbeat granularity. Drives BOTH how fast the web feels (pending/resume drain
+# latency) and how precisely cron fires. Default 3s: snappy for a single-user
+# self-hosted control plane, negligible idle DB load (three cheap claim queries per
+# tick). Override with SCHEDULER_TICK_SECONDS. Stays a SINGLE job (sequential
+# execution) — see the module docstring on why concurrency is deliberately avoided.
+TICK_SECONDS = max(1, int(os.environ.get("SCHEDULER_TICK_SECONDS", "3")))
 
 
 def _utc_now() -> datetime:
