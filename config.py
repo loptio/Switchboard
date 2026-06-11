@@ -43,6 +43,15 @@ class Config:
     output_language: str = DEFAULT_LANGUAGE
     coding_task: str = ""
     coding_workspace: Path = Path(DEFAULT_CODING_WORKSPACE)
+    # Phase 10c: opt-in automatic coder↔reviewer dialogue (default off → pre-10c path).
+    coding_auto_review: bool = False
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
 
 
 def _positive_int(name: str, default: int) -> int:
@@ -68,4 +77,5 @@ def load_config() -> Config:
         output_language=os.getenv("OUTPUT_LANGUAGE", DEFAULT_LANGUAGE),
         coding_task=os.getenv("CODING_TASK", ""),
         coding_workspace=Path(os.getenv("CODING_WORKSPACE", DEFAULT_CODING_WORKSPACE)),
+        coding_auto_review=_bool_env("CODING_AUTO_REVIEW", False),
     )

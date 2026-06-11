@@ -106,6 +106,31 @@ const META_REVIEW: ReviewPayload = {
   },
 };
 
+describe("ReviewPanel (coding auto-reviewer, Phase 10c)", () => {
+  beforeEach(() => vi.mocked(resumeRun).mockResolvedValue({ id: "r1" } as Run));
+  afterEach(() => vi.clearAllMocks());
+
+  it("shows the auto-reviewer verdict and its open issues", () => {
+    const review: ReviewPayload = {
+      coding: {
+        summary: "added f()",
+        diff: "--- a\n+++ b\n+def f(): pass\n",
+        changed_files: ["x.py"],
+        status: "completed",
+        review_verdict: "not_converged",
+        review_rounds: 2,
+        review_issues: [{ severity: "major", detail: "missing error handling" }],
+      },
+    };
+    render(<ReviewPanel runId="r1" review={review} onResolved={() => {}} />);
+    expect(screen.getByText(/auto-reviewer/i)).toBeInTheDocument();
+    expect(screen.getByText(/did NOT converge/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("reviewer issues")).toHaveTextContent(
+      "missing error handling",
+    );
+  });
+});
+
 describe("ReviewPanel (meta proposal)", () => {
   beforeEach(() => vi.mocked(resumeRun).mockResolvedValue({ id: "r1" } as Run));
   afterEach(() => vi.clearAllMocks());

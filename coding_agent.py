@@ -177,6 +177,13 @@ class CodingResult:
     `git_tampered` (Phase 10b-2) lists `.git` paths a command modified; the family
     refuses to finalize such a run (the un-sandboxable hook code-execution vector). It
     is set by the family (worker-side), never by the seam itself.
+
+    `review_*` (Phase 10c) carry the AUTOMATIC reviewer's outcome — the coder↔reviewer
+    dialogue. They are set by the family's review node (worker-side), never by the seam:
+    `review_verdict` ∈ {None (no auto-review ran), "approved", "not_converged"};
+    `review_rounds` = how many reviewer passes happened; `review_issues` = the last
+    round's open issues (shown at the human gate so the human sees what the AI reviewer
+    flagged).
     """
 
     summary: str
@@ -188,6 +195,9 @@ class CodingResult:
     cost_usd: float | None = None
     commands: list[str] = field(default_factory=list)
     git_tampered: list[str] = field(default_factory=list)
+    review_verdict: str | None = None
+    review_rounds: int = 0
+    review_issues: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

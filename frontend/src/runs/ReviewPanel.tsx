@@ -15,6 +15,8 @@ export function CodingDiff({ coding }: { coding: CodingReviewPayload }) {
   const stopped = coding.status !== "completed";
   const tampered = coding.git_tampered ?? [];
   const commands = coding.commands ?? [];
+  const reviewVerdict = coding.review_verdict;
+  const reviewIssues = coding.review_issues ?? [];
   return (
     <div>
       {tampered.length > 0 && (
@@ -23,6 +25,26 @@ export function CodingDiff({ coding }: { coding: CodingReviewPayload }) {
           hook/config code-execution vector. It was reverted and this run will NOT be
           finalized. Reject and re-run.
         </p>
+      )}
+      {/* Phase 10c: what the automatic reviewer concluded before the human gate. */}
+      {reviewVerdict && (
+        <div className={reviewVerdict === "approved" ? undefined : styles.limitBanner}>
+          <strong>
+            🤖 Auto-reviewer:{" "}
+            {reviewVerdict === "approved"
+              ? `approved after ${coding.review_rounds ?? 1} round(s)`
+              : `did NOT converge after ${coding.review_rounds ?? 0} round(s) — open issues remain`}
+          </strong>
+          {reviewIssues.length > 0 && (
+            <ul aria-label="reviewer issues">
+              {reviewIssues.map((it, i) => (
+                <li key={i}>
+                  [{it.severity}] {it.detail}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
       {stopped && (
         <p role="alert" className={styles.limitBanner}>

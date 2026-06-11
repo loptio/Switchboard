@@ -83,6 +83,20 @@ def render_coding_markdown(result: CodingResult) -> str:
         lines.extend(f"- `{f}`" for f in result.changed_files)
     else:
         lines.append("_No files changed._")
+    # Phase 10c: the automatic reviewer's outcome (only when it ran).
+    if result.review_verdict is not None:
+        verdict = (
+            f"approved after {result.review_rounds} round(s)"
+            if result.review_verdict == "approved"
+            else f"did not converge after {result.review_rounds} round(s)"
+        )
+        lines.extend(["", "## Auto-reviewer", "", f"**Verdict:** {verdict}"])
+        if result.review_issues:
+            lines.append("")
+            lines.extend(
+                f"- [{it.get('severity', 'major')}] {_inline(it.get('detail', ''))}"
+                for it in result.review_issues
+            )
     lines.extend(["", "## Diff", "", "```diff", result.diff.rstrip("\n") if result.diff else "", "```"])
     return "\n".join(lines).rstrip() + "\n"
 

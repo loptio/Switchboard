@@ -149,6 +149,10 @@ export interface CodingReviewPayload {
   task?: string; // Phase 10b-1: the per-run task this coding run was given
   commands?: string[]; // Phase 10b-2: shell commands the agent ran (side effects not in the diff)
   git_tampered?: string[]; // Phase 10b-2: .git paths a command touched (reverted; run refused)
+  // Phase 10c: the automatic reviewer's outcome (coder↔reviewer dialogue).
+  review_verdict?: string | null; // "approved" | "not_converged" | null (no auto-review)
+  review_rounds?: number;
+  review_issues?: { severity: string; detail: string }[];
 }
 export interface MetaReviewPayload {
   // Phase 9: a meta run's validated proposal awaiting approval. Approve persists

@@ -12,6 +12,7 @@ import pytest
 
 import coding_orchestrator as CO
 import engine
+from agent import AgentContractError
 from coding_agent import CodingResult
 from workflows import CODING_DEF, Branch, Node, WorkflowDef
 
@@ -97,3 +98,104 @@ def test_engine_rejects_coding_agent_node_with_unregistered_handler():
     )
     with pytest.raises(ValueError, match="unregistered handler 'missing'"):
         engine.build_graph(wf, _S, node_handlers={}, predicates={})
+
+
+# --- Phase 10c: the automatic coder↔reviewer dialogue -----------------------
+
+class _ScriptedSeam:
+    """Returns a CodingResult per call (so a redo gets a fresh result), recording
+    each call's feedback so we can assert the reviewer's feedback reached the coder."""
+
+    def __init__(self, *results):
+        self.results = list(results)
+        self.calls = []
+
+    def __call__(self, task, workspace, *, model, max_turns, max_tool_calls,
+                 max_budget_usd, feedback=None, **kw):
+        self.calls.append({"feedback": feedback})
+        return self.results.pop(0) if len(self.results) > 1 else self.results[0]
+
+
+class _ScriptedReviewer:
+    def __init__(self, *verdicts):
+        self.verdicts = list(verdicts)
+        self.calls = []
+
+    def __call__(self, task, result, *, model):
+        self.calls.append({"task": task, "status": result.get("status")})
+        out = self.verdicts.pop(0)
+        if isinstance(out, Exception):
+            raise out
+        return out
+
+
+def _approve():
+    return {"approved": True, "summary": "lgtm", "issues": []}
+
+
+def _reject(detail="fix the bug"):
+    return {"approved": False, "summary": "no", "issues": [{"severity": "major", "detail": detail}]}
+
+
+def test_auto_review_off_skips_the_reviewer():
+    # The default (pre-10c) path: no reviewer call, no review verdict.
+    seam = _ScriptedSeam(_result())
+    reviewer = _ScriptedReviewer(_approve())
+    out = CO.build_coding("t", "/tmp/ws", model="m", coding_fn=seam, reviewer_fn=reviewer)
+    assert reviewer.calls == []
+    assert out.review_verdict is None and out.review_rounds == 0
+
+
+def test_auto_review_approves_first_round():
+    seam = _ScriptedSeam(_result())
+    reviewer = _ScriptedReviewer(_approve())
+    out = CO.build_coding(
+        "t", "/tmp/ws", model="m", coding_fn=seam, reviewer_fn=reviewer, auto_review=True
+    )
+    assert len(seam.calls) == 1 and len(reviewer.calls) == 1
+    assert out.review_verdict == "approved" and out.review_rounds == 1
+
+
+def test_auto_review_rejects_then_approves_and_feeds_back():
+    seam = _ScriptedSeam(_result(summary="v1"), _result(summary="v2"))
+    reviewer = _ScriptedReviewer(_reject("null deref on line 3"), _approve())
+    out = CO.build_coding(
+        "t", "/tmp/ws", model="m", coding_fn=seam, reviewer_fn=reviewer, auto_review=True
+    )
+    # coder ran twice (initial + 1 redo); reviewer twice; converged approved.
+    assert len(seam.calls) == 2 and len(reviewer.calls) == 2
+    assert out.review_verdict == "approved" and out.review_rounds == 2
+    # the reviewer's issue reached the coder as feedback on the redo.
+    assert "null deref on line 3" in (seam.calls[1]["feedback"] or "")
+
+
+def test_auto_review_not_converged_at_cap():
+    seam = _ScriptedSeam(_result(summary="v1"), _result(summary="v2"))
+    reviewer = _ScriptedReviewer(_reject(), _reject())  # never approves
+    out = CO.build_coding(
+        "t", "/tmp/ws", model="m", coding_fn=seam, reviewer_fn=reviewer,
+        auto_review=True, max_review_rounds=2,
+    )
+    assert len(reviewer.calls) == 2  # bounded
+    assert out.review_verdict == "not_converged" and out.review_rounds == 2
+    assert len(out.review_issues) == 1  # last round's issues surfaced
+
+
+def test_auto_review_contract_violation_degrades_to_approve():
+    seam = _ScriptedSeam(_result())
+    reviewer = _ScriptedReviewer(AgentContractError("garbage"))
+    out = CO.build_coding(
+        "t", "/tmp/ws", model="m", coding_fn=seam, reviewer_fn=reviewer, auto_review=True
+    )
+    # a misbehaving reviewer never traps the run — treated as approve.
+    assert out.review_verdict == "approved" and out.review_rounds == 1
+
+
+def test_auto_review_skips_a_failed_coder_result():
+    # a hard `failed` seam result has nothing to review → reviewer not called.
+    seam = _ScriptedSeam(_result(status="failed"))
+    reviewer = _ScriptedReviewer(_approve())
+    out = CO.build_coding(
+        "t", "/tmp/ws", model="m", coding_fn=seam, reviewer_fn=reviewer, auto_review=True
+    )
+    assert reviewer.calls == [] and out.review_verdict is None

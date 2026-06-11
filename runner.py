@@ -47,6 +47,7 @@ from brief_orchestrator import build_brief
 from coding_agent import CodingResult
 from coding_orchestrator import (
     DEFAULT_MAX_BUDGET_USD,
+    DEFAULT_MAX_REVIEW_ROUNDS,
     DEFAULT_MAX_TOOL_CALLS,
     DEFAULT_MAX_TURNS,
     build_coding,
@@ -309,12 +310,15 @@ def _coding_precondition_error(workspace_dir: str) -> str | None:
 
 
 def _coding_bounds(wf) -> dict:
-    """The coding agent's bounded-loop caps, from the WorkflowDef params (data)."""
+    """The coding agent's bounded-loop caps, from the WorkflowDef params (data).
+    Includes the Phase 10c reviewer-round bound; whether the reviewer actually runs is
+    the operational `auto_review` toggle (Config), passed separately at the call site."""
     params = wf.params or {}
     return {
         "max_turns": params.get("max_turns", DEFAULT_MAX_TURNS),
         "max_tool_calls": params.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
         "max_budget_usd": params.get("max_budget_usd", DEFAULT_MAX_BUDGET_USD),
+        "max_review_rounds": params.get("max_review_rounds", DEFAULT_MAX_REVIEW_ROUNDS),
     }
 
 
@@ -350,6 +354,13 @@ def _finalize_coding(run: db.Run, result: CodingResult, cfg: Config, now: dateti
         return db.mark_failed(run.id, f"coding agent stopped: {result.status}", now=now)
     final = db.mark_success(run.id, now=now)
     log.info("run %s succeeded (coding, %d file(s) changed)", run.id, len(result.changed_files))
+    # Phase 10c + 11: surface the automatic reviewer's outcome on the Run (when it ran).
+    if result.review_verdict is not None:
+        _record_meta(
+            run.id,
+            verdict=f"reviewer:{result.review_verdict}",
+            email=None,
+        )
     return final
 
 
@@ -374,7 +385,8 @@ def _run_coding_pipeline(
         # seam (build_coding's default).
         extra = {"coding_fn": coding_fn} if coding_fn is not None else {}
         result = build_coding(
-            task, workspace_dir, model=cfg.model, wf=wf_arg, **_coding_bounds(wf), **extra
+            task, workspace_dir, model=cfg.model, wf=wf_arg,
+            auto_review=cfg.coding_auto_review, **_coding_bounds(wf), **extra,
         )
     except Exception as exc:
         log.exception("run %s failed", run.id)
@@ -948,7 +960,7 @@ def _run_coding_review_claimed(
         with _checkpointer_cm(checkpointer) as cp:
             outcome = start_coding_review_run(
                 task, workspace_dir, model=cfg.model, thread_id=run.id, checkpointer=cp,
-                wf=wf_arg, **_coding_bounds(wf), **extra,
+                wf=wf_arg, auto_review=cfg.coding_auto_review, **_coding_bounds(wf), **extra,
             )
         return _apply_coding_outcome(run, outcome, cfg, now)
     except Exception as exc:

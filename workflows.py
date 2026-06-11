@@ -192,14 +192,31 @@ BRIEF_DEF = WorkflowDef(
 CODING_DEF = WorkflowDef(
     id="coding",
     entry="coding",
-    params={"max_turns": 12, "max_tool_calls": 40, "max_budget_usd": 1.0},
+    params={
+        "max_turns": 12, "max_tool_calls": 40, "max_budget_usd": 1.0,
+        # Phase 10c: the automatic coder↔reviewer dialogue. OPT-IN (default off via
+        # Config) → when off, coding routes straight to finalize_gate, byte-for-byte
+        # the pre-10c path. `max_review_rounds` bounds the dialogue (like max_redos).
+        "max_review_rounds": 2,
+    },
     source_ref=None,
     output_ref="coding",
     nodes=(
+        # Phase 10c: coding branches to the automatic reviewer when auto-review is ON
+        # and there is reviewable work; otherwise straight to finalize_gate (the
+        # pre-10c default — byte-for-byte the U1/U2 path).
         Node(
             "coding", "coding_agent",
             handler_ref="coding_run", config_key="coding_fn",
-            next="finalize_gate",
+            branch=Branch("coding_route_after_coding", {"review": "review", "finalize_gate": "finalize_gate"}),
+        ),
+        # review (Phase 10c): the automatic reviewer reads the diff → approve → finalize_gate;
+        # needs-work with rounds left → back to coding (with the reviewer's feedback);
+        # rounds exhausted → finalize_gate (not converged — the human gate still decides).
+        Node(
+            "review", "step",
+            handler_ref="coding_review", config_key="reviewer_fn",
+            branch=Branch("coding_route_after_review", {"coding": "coding", "finalize_gate": "finalize_gate"}),
         ),
         # finalize_gate routes to the human diff-review gate when review is ON (U2),
         # else straight to END (the non-review default — byte-for-byte the U1 path).

@@ -288,3 +288,39 @@ def test_run_once_dispatches_to_coding(database, tmp_path, monkeypatch):
     assert run.status == "success"
     assert captured["task"] == "add a hello module"
     assert captured["kw"]["wf"] is None  # code default -> prebuilt module graph
+
+
+# --- Phase 10c: auto-review threading + verdict in run meta -----------------
+
+def test_auto_review_threads_from_config(database, tmp_path, monkeypatch):
+    # Config.coding_auto_review flows into build_coding as auto_review=True.
+    captured = {}
+
+    def fake_build(task, workspace_dir, *, model, wf=None, auto_review=False, **kw):
+        captured["auto_review"] = auto_review
+        return CodingResult(summary="s", diff="d", changed_files=["f"], status="completed")
+
+    monkeypatch.setattr(runner, "build_coding", fake_build)
+    cfg = Config(
+        feed_url="x", count=1, output_dir=tmp_path / "out", model="m",
+        coding_task="t", coding_workspace=tmp_path / "ws", coding_auto_review=True,
+    )
+    db.create_run(workflow="coding", trigger="manual", coding_task="t",
+                  coding_workspace=str(tmp_path / "ws"), now=T0)
+    claimed = db.claim_next_pending_run(now=T0)
+    runner.execute_claimed_run(claimed, config=cfg, now=T0)
+    assert captured["auto_review"] is True
+
+
+def test_reviewer_verdict_recorded_in_run_meta(database, tmp_path):
+    # A coding result carrying the reviewer's verdict surfaces on runs.meta (Phase 11).
+    run = db.create_run(workflow="coding", trigger="manual", now=T0)
+    db.mark_running(run.id, now=T0)
+    result = CodingResult(
+        summary="ok", diff="--- a\n+++ b\n", changed_files=["f.py"], status="completed",
+        review_verdict="approved", review_rounds=2,
+    )
+    cfg = Config(feed_url="x", count=1, output_dir=tmp_path / "out", model="m")
+    final = runner._finalize_coding(run, result, cfg, T0)
+    assert final.status == "success"
+    assert db.get_run(run.id).meta == {"verdict": "reviewer:approved"}
