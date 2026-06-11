@@ -27,22 +27,17 @@ they don't get silently lost or pulled into the wrong phase.
 
 ## Monitoring / observability
 
-- **Email delivery is a blind spot.** A failed email is only logged and the Run
-  still shows `success` (the digest is saved — graceful degradation by design,
-  Units 2/3). Nothing records whether delivery actually happened. When delivery
-  confirmation matters, persist a delivery status onto the Run (or a future
-  Event row) so `success` reflects end-to-end delivery, not just that the digest
-  was produced.
-  - _Revisit:_ when email reliability becomes operationally important (after
-    Unit 3, before relying on the push in anger).
+- **Email delivery is a blind spot. — DONE (Phase 11, 2026-06-12).** The delivery
+  outcome (sent / skipped / failed) is now persisted onto `runs.meta` and shown as
+  an "Email" badge on the run detail page. The run still stays `success` on a
+  delivery failure (graceful degradation unchanged) — but the failure is now
+  *visible* instead of buried in logs. (Caught a real `Connection refused` to the
+  SMTP server live, the moment it shipped.)
 
-- **Digest quality is logged but not persisted.** The orchestrator's review
-  verdict (passed / accepted-at-cap-with-open-issues / verification-inconclusive)
-  only goes to the run log (Phase 5 Unit 1). Persist it onto the Run (or a future
-  Event row) so the control-plane UI can surface digest *quality*, not just
-  success/failed.
-  - _Revisit:_ the monitoring/observability unit (same place as the email
-    delivery-status item above).
+- **Digest quality is logged but not persisted. — DONE (Phase 11, 2026-06-12).**
+  The verdict (passed / accepted_at_cap / inconclusive / human_approved) is now
+  persisted onto `runs.meta` (build_digest_with_verdict → runner._finalize →
+  set_run_meta) and shown as a "Quality" badge on the run detail page.
 
 ## Checkpointer / orchestration (Phase 5)
 
