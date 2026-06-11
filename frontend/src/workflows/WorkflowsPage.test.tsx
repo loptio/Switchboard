@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -54,16 +54,33 @@ describe("WorkflowsPage", () => {
     vi.unstubAllGlobals();
   });
 
-  it("lists built-in and custom workflows", async () => {
+  it("lists built-in and custom workflows in the sidebar", async () => {
     vi.mocked(listWorkflowDefs).mockResolvedValue([
       wf(),
       wf({ def_id: "mine", name: "Mine", builtin: false }),
     ]);
     renderPage();
-    expect(await screen.findByText("news")).toBeInTheDocument();
-    expect(screen.getByText("Mine")).toBeInTheDocument();
-    expect(screen.getAllByText("built-in").length).toBe(1);
-    expect(screen.getByText("custom")).toBeInTheDocument();
+    const list = await screen.findByRole("navigation", { name: /workflows/i });
+    expect(within(list).getByText("Mine")).toBeInTheDocument();
+    expect(within(list).getByText("built-in")).toBeInTheDocument();
+    expect(within(list).getByText("custom")).toBeInTheDocument();
+    // the first workflow auto-selects → its graph renders on the right
+    expect(await screen.findByRole("img", { name: /workflow graph/i })).toBeInTheDocument();
+  });
+
+  it("shows the selected workflow's graph and switches on click", async () => {
+    const user = userEvent.setup();
+    vi.mocked(listWorkflowDefs).mockResolvedValue([
+      wf(),
+      wf({ def_id: "mine", name: "Mine", builtin: false }),
+    ]);
+    renderPage();
+    const list = await screen.findByRole("navigation", { name: /workflows/i });
+    await user.click(within(list).getByText("Mine"));
+    // the detail title reflects the newly selected workflow
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Mine" })).toBeInTheDocument(),
+    );
   });
 
   it("runs a workflow via the handoff", async () => {

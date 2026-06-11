@@ -1,23 +1,35 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { ApiError } from "../api/client";
 import { cloneWorkflowDef, deleteWorkflowDef, triggerRun } from "../api/endpoints";
+import type { WorkflowDef } from "../api/types";
 import { Button } from "../components/Button";
-import { Card } from "../components/Card";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Spinner } from "../components/Spinner";
 import { useWorkflows } from "./useWorkflows";
 import { WorkflowGraph } from "./WorkflowGraph";
-import styles from "./Synth.module.css";
+import styles from "./WorkflowsPage.module.css";
 
-/** Lists built-in (read-only) + custom workflow defs. Run now / clone / edit / delete. */
+/** Master-detail workflows view: a list on the left, the selected workflow's graph +
+ *  actions (Run, Clone, Edit, Delete) on the right. Built-in defs are read-only —
+ *  clone one to create an editable variant. */
 export function WorkflowsPage() {
   const { items, loading, error, refresh } = useWorkflows();
   const [msg, setMsg] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [openGraph, setOpenGraph] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  // Keep a valid selection: default to the first workflow, and re-resolve if the
+  // selected one disappears (e.g. after a delete) or the list loads/changes.
+  const selected = useMemo(
+    () => items.find((w) => w.def_id === selectedId) ?? items[0] ?? null,
+    [items, selectedId],
+  );
+  useEffect(() => {
+    if (selected && selected.def_id !== selectedId) setSelectedId(selected.def_id);
+  }, [selected, selectedId]);
 
   async function run(defId: string, review = false) {
     setMsg(null);
@@ -48,6 +60,7 @@ export function WorkflowsPage() {
     setActionError(null);
     try {
       await deleteWorkflowDef(defId);
+      if (selectedId === defId) setSelectedId(null);
       await refresh();
     } catch (e) {
       setActionError(e instanceof ApiError ? e.detail : "Failed to delete.");
@@ -55,10 +68,11 @@ export function WorkflowsPage() {
   }
 
   return (
-    <section>
+    <section className={styles.page}>
       <h1 className={styles.title}>Workflows</h1>
       <p className={styles.muted}>
-        Built-in workflows are read-only — clone one to create an editable variant.
+        Pick a workflow to see its graph. Built-in workflows are read-only — clone one
+        to create an editable variant.
       </p>
       {msg && <p className={styles.muted}>{msg}</p>}
       {error && <ErrorBanner message={error} />}
@@ -68,67 +82,95 @@ export function WorkflowsPage() {
         <div className={styles.center}>
           <Spinner label="Loading workflows…" />
         </div>
+      ) : items.length === 0 ? (
+        <div className={styles.empty}>No workflows yet.</div>
       ) : (
-        <div className={styles.list}>
-          {items.map((wf) => (
-            <Card key={wf.def_id} className={styles.row}>
-              <div className={styles.rowMain}>
-                <span className={styles.defId}>
-                  <span>{wf.name || wf.def_id}</span>
-                  <span
-                    className={`${styles.badge} ${wf.builtin ? styles.builtinBadge : ""}`}
-                  >
-                    {wf.builtin ? "built-in" : "custom"}
-                  </span>
-                  <span className={styles.badge}>{wf.definition.output_ref}</span>
-                </span>
-                <span className={styles.muted}>
-                  {wf.def_id} · {wf.definition.nodes.length} node(s)
-                </span>
-              </div>
-              <div className={styles.actions}>
-                <Button onClick={() => void run(wf.def_id)}>Run now</Button>
-                {(wf.definition.output_ref === "digest" ||
-                  wf.definition.output_ref === "coding") && (
-                  <Button variant="secondary" onClick={() => void run(wf.def_id, true)}>
-                    Run (review)
-                  </Button>
-                )}
-                <Button
-                  variant="secondary"
-                  aria-expanded={openGraph === wf.def_id}
-                  onClick={() =>
-                    setOpenGraph(openGraph === wf.def_id ? null : wf.def_id)
-                  }
+        <div className={styles.layout}>
+          <nav className={styles.sidebar} aria-label="workflows">
+            {items.map((wf) => (
+              <button
+                key={wf.def_id}
+                type="button"
+                className={`${styles.item} ${
+                  selected?.def_id === wf.def_id ? styles.itemActive : ""
+                }`}
+                aria-current={selected?.def_id === wf.def_id}
+                onClick={() => setSelectedId(wf.def_id)}
+              >
+                <span className={styles.itemName}>{wf.name || wf.def_id}</span>
+                <span
+                  className={`${styles.badge} ${wf.builtin ? styles.builtinBadge : ""}`}
                 >
-                  {openGraph === wf.def_id ? "Hide graph" : "View graph"}
-                </Button>
-                <Button variant="secondary" onClick={() => void clone(wf.def_id)}>
-                  Clone
-                </Button>
-                {!wf.builtin && (
-                  <>
-                    <Button
-                      variant="secondary"
-                      onClick={() => navigate(`/workflows/${wf.def_id}/edit`)}
-                    >
-                      Edit
-                    </Button>
-                    <Button variant="danger" onClick={() => void remove(wf.def_id)}>
-                      Delete
-                    </Button>
-                  </>
-                )}
-              </div>
-              {openGraph === wf.def_id && (
-                <div className={styles.graphWrap}>
-                  <WorkflowGraph definition={wf.definition} />
-                </div>
-              )}
-            </Card>
-          ))}
+                  {wf.builtin ? "built-in" : "custom"}
+                </span>
+              </button>
+            ))}
+          </nav>
+
+          {selected && <WorkflowDetail wf={selected} onRun={run} onClone={clone} onRemove={remove} navigate={navigate} />}
         </div>
       )}
     </section>
+  );
+}
+
+function WorkflowDetail({
+  wf,
+  onRun,
+  onClone,
+  onRemove,
+  navigate,
+}: {
+  wf: WorkflowDef;
+  onRun: (id: string, review?: boolean) => void;
+  onClone: (id: string) => void;
+  onRemove: (id: string) => void;
+  navigate: (to: string) => void;
+}) {
+  const family = wf.definition.output_ref;
+  const reviewable = family === "digest" || family === "coding";
+  return (
+    <main className={styles.detail}>
+      <div className={styles.detailHead}>
+        <div className={styles.detailTitleWrap}>
+          <h2 className={styles.detailTitle}>{wf.name || wf.def_id}</h2>
+          <span className={styles.metaLine}>
+            <code>{wf.def_id}</code>
+            {family && <span className={styles.badge}>{family}</span>}
+            <span className={styles.muted}>{wf.definition.nodes.length} node(s)</span>
+          </span>
+        </div>
+        <div className={styles.detailActions}>
+          <Button onClick={() => onRun(wf.def_id)}>Run now</Button>
+          {reviewable && (
+            <Button variant="secondary" onClick={() => onRun(wf.def_id, true)}>
+              Run (review)
+            </Button>
+          )}
+          <Button variant="secondary" onClick={() => onClone(wf.def_id)}>
+            Clone
+          </Button>
+          {!wf.builtin && (
+            <>
+              <Button
+                variant="secondary"
+                onClick={() => navigate(`/workflows/${wf.def_id}/edit`)}
+              >
+                Edit
+              </Button>
+              <Button variant="danger" onClick={() => onRemove(wf.def_id)}>
+                Delete
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {wf.description && <p className={styles.description}>{wf.description}</p>}
+
+      <div className={styles.graphWrap}>
+        <WorkflowGraph definition={wf.definition} />
+      </div>
+    </main>
   );
 }
