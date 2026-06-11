@@ -156,7 +156,8 @@
   - ✅ **10a** 接缝 + 编码家族:`coding_agent.py`(唯一 agent-loop SDK 调用者、可 fake、有界)+ coding 工作流 + web diff 审核
   - ✅ **10b-1** 可指挥:每 run task/workspace + git 感知 diff/还原 + clean-tree 前置 + `.git` 拒写
   - ✅ **10b-2-1** 真 shell + 沙箱(2026-06-11 合并):Bash + 借用 Seatbelt(文件系统→工作区、网络拒、命令超时)+ 命令审计 + `.git` 完整性兜底 + worker 密钥 denylist 擦除(逃逸验收 hands-on 通过)
-  - ⬜ 10b-2 后段(网络细粒度放行、commit/PR 自动化)· 10b-3(会话生命周期 UI)· 10c(多 agent 对话)。前置债:coding 进共享并发 worker 前,env 擦除须改子进程级(见 `coding_agent._scrubbed_env`)
+  - ✅ **10c** 多 agent 对话(coder + 自动 reviewer):coder 与一个走 llm 接缝(只读 diff、无工具、无新安全面)的自动 reviewer **有界来回**(`max_review_rounds`,默认 opt-in 关 → 运行时逐字节不变);reviewer approve 或给反馈让 coder 再改,收敛后人审最后拍板。verdict 进 `runs.meta` + 审核 payload。496 测试,40-agent 对抗评审 0 缺陷。真 E2E + 合并待用户。
+  - ⬜ 10b-2 后段(网络细粒度放行、commit/PR 自动化)· 10b-3(会话生命周期 UI)。前置债:coding 进共享并发 worker 前,env 擦除须改子进程级(见 `coding_agent._scrubbed_env`)
 - 🔨 **(小项,非 phase)Mac-as-server**:已建(deploy/ 的 launchd user agents:worker 带 caffeinate + API 于 127.0.0.1:8400,Tailscale 远程方案见 deploy/README)——**安装 = 用户跑一次 `deploy/install.sh`**(自启动服务的开关留给人)。上云推迟。
 - ✅ **Phase 11(可观测性)** — 工作流可视化 + 运行时监控:每个工作流可展开看**拓扑图**(节点/边/分支/循环,前端手绘 SVG);运行时引擎逐节点发事件(`run_node_events`,opt-in 经 contextvar、离线无影响),`GET /runs/:id/progress` 暴露,RunDetail 用同一张图**实时点亮**节点(running/done/failed,跑动时 ● live)。兑现决策表 Event 行 + 北极星的"监控运行"。
 - (浏览器 / 社媒 agent:按需插入,先过 ToS 合规。)
