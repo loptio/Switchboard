@@ -45,6 +45,8 @@ class Config:
     coding_workspace: Path = Path(DEFAULT_CODING_WORKSPACE)
     # Phase 10c: opt-in automatic coder↔reviewer dialogue (default off → pre-10c path).
     coding_auto_review: bool = False
+    # Phase 10b-2: opt-in auto-commit of a SUCCESSFUL coding run's diff (default off).
+    coding_auto_commit: bool = False
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -78,4 +80,5 @@ def load_config() -> Config:
         coding_task=os.getenv("CODING_TASK", ""),
         coding_workspace=Path(os.getenv("CODING_WORKSPACE", DEFAULT_CODING_WORKSPACE)),
         coding_auto_review=_bool_env("CODING_AUTO_REVIEW", False),
+        coding_auto_commit=_bool_env("CODING_AUTO_COMMIT", False),
     )

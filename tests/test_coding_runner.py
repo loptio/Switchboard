@@ -324,3 +324,37 @@ def test_reviewer_verdict_recorded_in_run_meta(database, tmp_path):
     final = runner._finalize_coding(run, result, cfg, T0)
     assert final.status == "success"
     assert db.get_run(run.id).meta == {"verdict": "reviewer:approved"}
+
+
+# --- Phase 10b-2: auto-commit a successful coding run -----------------------
+
+def test_auto_commit_commits_and_records_the_hash(database, tmp_path, git_repo):
+    cfg = Config(
+        feed_url="x", count=1, output_dir=tmp_path / "out", model="m",
+        coding_task="add hello", coding_workspace=git_repo, coding_auto_commit=True,
+    )
+    seam = _FakeSeam()  # writes hello.py
+    done = _claim_and_run(cfg, seam, coding_workspace=str(git_repo))
+
+    assert done.status == "success"
+    # the agent's change is now COMMITTED (tree clean) and the hash is on the Run meta.
+    assert workspace.git_is_clean(git_repo) is True
+    meta = db.get_run(done.id).meta
+    assert meta and meta.get("commit") and len(meta["commit"]) >= 7
+    # the commit message carries the agent's summary + the run id (provenance).
+    import subprocess
+    msg = subprocess.run(
+        ["git", "-C", str(git_repo), "log", "-1", "--pretty=%B"],
+        capture_output=True, text=True,
+    ).stdout
+    assert "hello.py" in msg or "hello" in msg.lower()
+    assert done.id in msg
+
+
+def test_auto_commit_off_by_default_leaves_diff_uncommitted(database, tmp_path, git_repo):
+    cfg = _cfg(tmp_path)  # coding_auto_commit defaults False
+    seam = _FakeSeam()
+    done = _claim_and_run(cfg, seam, coding_workspace=str(git_repo))
+    assert done.status == "success"
+    assert not workspace.git_is_clean(git_repo)  # change kept, not committed
+    assert (db.get_run(done.id).meta or {}).get("commit") is None

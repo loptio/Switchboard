@@ -11,8 +11,9 @@ export type RunTrigger = "scheduled" | "manual";
 
 // Phase 11 observability: run-level quality + delivery, surfaced on RunOut.meta.
 export interface RunMeta {
-  verdict?: string; // passed | accepted_at_cap | inconclusive | human_approved
+  verdict?: string; // passed | accepted_at_cap | inconclusive | human_approved | reviewer:*
   email?: string; // sent | skipped | failed
+  commit?: string; // Phase 10b-2: short hash of an auto-committed coding run
 }
 
 export interface Run {

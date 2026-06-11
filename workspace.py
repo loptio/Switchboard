@@ -234,6 +234,38 @@ def git_restore(root: str | os.PathLike) -> None:
     _git(root, "clean", "-fd")
 
 
+# Committer identity for auto-commits — explicit so a commit works even when the repo
+# has no user.name/user.email configured (a fresh repo, CI, etc.). The agent never
+# commits; the worker does, OUTSIDE the sandbox, only after the run has succeeded.
+_COMMIT_NAME = "Switchboard coding agent"
+_COMMIT_EMAIL = "noreply@anthropic.com"
+
+
+def git_commit(root: str | os.PathLike, message: str) -> str | None:
+    """Stage all working-tree changes and commit them; return the short commit hash,
+    or None if there is nothing to commit / the workspace is not a git repo / git
+    fails (best-effort — a commit failure never breaks a run). Worker-side ONLY: the
+    coder has no commit access; this runs after the run succeeded and the diff was
+    already reviewed (Phase 10b-2 commit automation).
+
+    Identity is passed via `-c` so the commit succeeds without repo git config."""
+    if not is_git_repo(root) or git_is_clean(root):
+        return None  # nothing to commit
+    if _git(root, "add", "-A").returncode != 0:
+        return None
+    commit = _git(
+        root,
+        "-c", f"user.name={_COMMIT_NAME}",
+        "-c", f"user.email={_COMMIT_EMAIL}",
+        "commit", "--no-verify", "-m", message,
+    )
+    if commit.returncode != 0:
+        log.warning("git_commit failed: %s", (commit.stderr or "").strip())
+        return None
+    rev = _git(root, "rev-parse", "--short", "HEAD")
+    return (rev.stdout or "").strip() or None
+
+
 # --- .git integrity guard (Phase 10b-2) -------------------------------------
 # A coding agent with a real shell could write into the repo's `.git` — and `.git/hooks`
 # scripts (or `.git/config` core.hooksPath / aliases / fsmonitor / sshCommand) run code

@@ -163,6 +163,20 @@ describe("RunDetail", () => {
     expect(screen.getByText(/delivery failed/i)).toBeInTheDocument();
   });
 
+  it("shows the auto-commit hash (Phase 10b-2)", async () => {
+    vi.mocked(getRun).mockResolvedValue({
+      ...SUCCESS_RUN,
+      workflow: "coding",
+      meta: { commit: "a1b2c3d" },
+    });
+    vi.mocked(getRunOutput).mockResolvedValue([]);
+
+    renderDetail();
+
+    expect(await screen.findByText("Commit")).toBeInTheDocument();
+    expect(screen.getByText("a1b2c3d")).toBeInTheDocument();
+  });
+
   it("draws the workflow graph and overlays live per-node status", async () => {
     const events: NodeEvent[] = [
       { node_id: "summarize", status: "done", seq: 0, at: "2026-06-08T00:00:01Z" },

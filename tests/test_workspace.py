@@ -240,3 +240,29 @@ def test_snapshot_then_diff_round_trip(tmp_path):
     diff, changed = workspace.compute_diff(before, after)
     assert changed == ["a.txt", "new.txt"]
     assert "+two" in diff and "+fresh" in diff
+
+
+# --- Phase 10b-2: git_commit (worker-side auto-commit) ----------------------
+
+def test_git_commit_commits_changes_and_returns_hash(git_repo):
+    (git_repo / "new.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    h = workspace.git_commit(git_repo, "add f()\n\nTask: add a function")
+    assert h and len(h) >= 7
+    # the tree is clean again (the change was committed) and the message stuck
+    assert workspace.git_is_clean(git_repo) is True
+    import subprocess
+    log = subprocess.run(
+        ["git", "-C", str(git_repo), "log", "-1", "--pretty=%s"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    assert log == "add f()"
+
+
+def test_git_commit_nothing_to_commit_returns_none(git_repo):
+    assert workspace.git_commit(git_repo, "noop") is None  # clean tree
+
+
+def test_git_commit_non_git_returns_none(tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert workspace.git_commit(plain, "x") is None

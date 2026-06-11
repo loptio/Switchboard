@@ -175,7 +175,10 @@ def _deliver(send_fn, payload, run_id: str, kind: str) -> str:
     return "sent" if email_configured() else "skipped"
 
 
-def _record_meta(run_id: str, *, verdict: str | None = None, email: str | None = None) -> None:
+def _record_meta(
+    run_id: str, *, verdict: str | None = None, email: str | None = None,
+    commit: str | None = None,
+) -> None:
     """Persist run-level observability meta (best-effort — bookkeeping never fails a
     run). Only includes the keys provided."""
     meta: dict = {}
@@ -183,6 +186,8 @@ def _record_meta(run_id: str, *, verdict: str | None = None, email: str | None =
         meta["verdict"] = verdict
     if email is not None:
         meta["email"] = email
+    if commit is not None:
+        meta["commit"] = commit
     if not meta:
         return
     try:
@@ -354,14 +359,37 @@ def _finalize_coding(run: db.Run, result: CodingResult, cfg: Config, now: dateti
         return db.mark_failed(run.id, f"coding agent stopped: {result.status}", now=now)
     final = db.mark_success(run.id, now=now)
     log.info("run %s succeeded (coding, %d file(s) changed)", run.id, len(result.changed_files))
-    # Phase 10c + 11: surface the automatic reviewer's outcome on the Run (when it ran).
-    if result.review_verdict is not None:
-        _record_meta(
-            run.id,
-            verdict=f"reviewer:{result.review_verdict}",
-            email=None,
-        )
+    # Phase 10b-2: auto-commit the approved/successful diff (opt-in, default off). The
+    # WORKER commits — OUTSIDE the sandbox, after the run already succeeded and the diff
+    # was reviewed. Best-effort: a commit failure never un-succeeds the run.
+    _, workspace_dir = _coding_inputs(run, cfg)
+    commit = None
+    if cfg.coding_auto_commit:
+        try:
+            commit = workspace.git_commit(workspace_dir, _commit_message(run, result, cfg))
+            if commit:
+                log.info("run %s: auto-committed as %s", run.id, commit)
+        except Exception:  # noqa: BLE001 — a commit must never fail the run
+            log.warning("run %s: auto-commit failed", run.id, exc_info=True)
+    # Phase 10c + 11: surface the reviewer verdict + the commit on the Run.
+    verdict = f"reviewer:{result.review_verdict}" if result.review_verdict is not None else None
+    _record_meta(run.id, verdict=verdict, commit=commit)
     return final
+
+
+def _commit_message(run: db.Run, result: CodingResult, cfg: Config) -> str:
+    """The auto-commit message: a concise subject from the agent's summary (else the
+    task), the task as the body, and provenance (the agent co-author + the run id)."""
+    task, _ = _coding_inputs(run, cfg)
+    subject = (result.summary or task or "coding agent change").strip().splitlines()[0]
+    if len(subject) > 72:
+        subject = subject[:69] + "…"
+    return (
+        f"{subject}\n\n"
+        f"Task: {task}\n\n"
+        f"Co-Authored-By: {workspace._COMMIT_NAME} <{workspace._COMMIT_EMAIL}>\n"
+        f"Switchboard-Run: {run.id}"
+    )
 
 
 def _run_coding_pipeline(

@@ -103,6 +103,14 @@ export function RunDetail() {
             <dd>{EMAIL_LABEL[run.meta.email] ?? run.meta.email}</dd>
           </div>
         )}
+        {run.meta?.commit && (
+          <div>
+            <dt>Commit</dt>
+            <dd>
+              <code>{run.meta.commit}</code>
+            </dd>
+          </div>
+        )}
       </dl>
 
       {run.error && <ErrorBanner message={run.error} />}
