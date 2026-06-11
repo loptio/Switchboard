@@ -6,6 +6,7 @@ import { RequireAuth } from "./auth/RequireAuth";
 import { Layout } from "./components/Layout";
 import { AgentBuilder } from "./agents/AgentBuilder";
 import { AgentsPage } from "./agents/AgentsPage";
+import { AssistantPage } from "./assistant/AssistantPage";
 import { RunDetail } from "./runs/RunDetail";
 import { RunsDashboard } from "./runs/RunsDashboard";
 import { SchedulesPage } from "./schedules/SchedulesPage";
@@ -20,6 +21,7 @@ export default function App() {
         <Route element={<RequireAuth />}>
           <Route element={<Layout />}>
             <Route path="/" element={<RunsDashboard />} />
+            <Route path="/assistant" element={<AssistantPage />} />
             <Route path="/runs/:id" element={<RunDetail />} />
             <Route path="/schedules" element={<SchedulesPage />} />
             <Route path="/workflows" element={<WorkflowsPage />} />

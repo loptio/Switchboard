@@ -1,0 +1,96 @@
+.page {
+  max-width: 760px;
+  margin: 0 auto;
+}
+.hero {
+  text-align: center;
+  margin-bottom: var(--space-4);
+}
+.title {
+  margin: 0 0 var(--space-2);
+  font-size: 24px;
+}
+.subtitle {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 14px;
+}
+.promptForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.prompt {
+  width: 100%;
+  min-height: 5rem;
+  padding: var(--space-2);
+  font-size: 15px;
+  line-height: 1.5;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  resize: vertical;
+  font-family: inherit;
+}
+.examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.example {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  background: var(--color-surface-2, rgba(127, 127, 127, 0.08));
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.example:hover {
+  border-color: var(--color-accent, #6366f1);
+}
+.actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+.status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: 14px;
+  padding: var(--space-3) 0;
+}
+.requestEcho {
+  font-style: italic;
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-3);
+}
+.refineBox {
+  margin-top: var(--space-3);
+}
+.refineInput {
+  width: 100%;
+  min-height: 3.5rem;
+  padding: var(--space-2);
+  font-size: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  margin-bottom: var(--space-2);
+}
+.doneCard {
+  text-align: center;
+}
+.createdList {
+  list-style: none;
+  padding: 0;
+  margin: var(--space-3) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.createdList code {
+  font-size: 13px;
+}
