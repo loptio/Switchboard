@@ -8,6 +8,7 @@ import { Card } from "../components/Card";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Spinner } from "../components/Spinner";
 import { useWorkflows } from "./useWorkflows";
+import { WorkflowGraph } from "./WorkflowGraph";
 import styles from "./Synth.module.css";
 
 /** Lists built-in (read-only) + custom workflow defs. Run now / clone / edit / delete. */
@@ -15,6 +16,7 @@ export function WorkflowsPage() {
   const { items, loading, error, refresh } = useWorkflows();
   const [msg, setMsg] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [openGraph, setOpenGraph] = useState<string | null>(null);
   const navigate = useNavigate();
 
   async function run(defId: string, review = false) {
@@ -92,6 +94,15 @@ export function WorkflowsPage() {
                     Run (review)
                   </Button>
                 )}
+                <Button
+                  variant="secondary"
+                  aria-expanded={openGraph === wf.def_id}
+                  onClick={() =>
+                    setOpenGraph(openGraph === wf.def_id ? null : wf.def_id)
+                  }
+                >
+                  {openGraph === wf.def_id ? "Hide graph" : "View graph"}
+                </Button>
                 <Button variant="secondary" onClick={() => void clone(wf.def_id)}>
                   Clone
                 </Button>
@@ -109,6 +120,11 @@ export function WorkflowsPage() {
                   </>
                 )}
               </div>
+              {openGraph === wf.def_id && (
+                <div className={styles.graphWrap}>
+                  <WorkflowGraph definition={wf.definition} />
+                </div>
+              )}
             </Card>
           ))}
         </div>
