@@ -225,24 +225,37 @@ def test_is_secret_env_flags_secrets_but_keeps_auth_infra():
         assert not C._is_secret_env(keep), keep
 
 
-def test_scrubbed_env_drops_secrets_keeps_infra_and_restores(monkeypatch):
+def test_secret_overlay_neutralises_secrets_without_mutating_environ(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "sk-leak")
     monkeypatch.setenv("SMTP_PASSWORD", "pw-leak")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "key-leak")
     monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@h/db")
     monkeypatch.setenv("SECURITYSESSIONID", "auth-infra")  # CLI auth needs this -> keep
-    with C._scrubbed_env():
-        for secret in ("SECRET_KEY", "SMTP_PASSWORD", "ANTHROPIC_API_KEY", "DATABASE_URL"):
-            assert secret not in os.environ  # no worker secret reaches the sandboxed shell
-        assert "PATH" in os.environ  # the CLI keeps what it needs to run...
-        assert os.environ.get("SECURITYSESSIONID") == "auth-infra"  # ...and to authenticate
-    # fully restored afterwards (the worker keeps its secrets for its own use)
-    assert os.environ.get("SECRET_KEY") == "sk-leak"
-    assert os.environ.get("DATABASE_URL") == "postgresql://u:p@h/db"
+
+    overlay = C._secret_overlay()
+
+    # every secret is overridden to "" (so the SDK's {**os.environ, **options.env} merge
+    # hands the sandboxed bash an EMPTY value, never the real one)
+    for secret in ("SECRET_KEY", "SMTP_PASSWORD", "ANTHROPIC_API_KEY", "DATABASE_URL"):
+        assert overlay[secret] == ""
+    # auth/shell infra the CLI needs is NOT in the overlay (passes through untouched)
+    assert "SECURITYSESSIONID" not in overlay
+    assert "PATH" not in overlay
+    # THE POINT: os.environ is NEVER mutated — a concurrent env-reading run still sees the
+    # real secret in its own process env (the old pop-and-restore made this unsafe).
+    assert os.environ["SECRET_KEY"] == "sk-leak"
+    assert os.environ["DATABASE_URL"] == "postgresql://u:p@h/db"
+    # simulate the SDK merge: the overlay wins, the subprocess sees empty, the process real
+    merged = {**os.environ, **overlay}
+    assert merged["SMTP_PASSWORD"] == "" and os.environ["SMTP_PASSWORD"] == "pw-leak"
 
 
-def test_build_options_env_is_just_the_bash_timeouts(tmp_path, monkeypatch):
+def test_build_options_env_neutralises_secrets_and_keeps_timeouts(tmp_path, monkeypatch):
     monkeypatch.setenv("SMTP_PASSWORD", "pw-leak")
     opts = _opts(tmp_path)
-    assert "SMTP_PASSWORD" not in opts.env  # options.env never carries worker secrets
+    # options.env now CARRIES the secret as "" (the subprocess-level scrub) — not the value
+    assert opts.env["SMTP_PASSWORD"] == ""
+    assert "pw-leak" not in opts.env.values()
     assert opts.env["BASH_MAX_TIMEOUT_MS"] == str(C.MAX_BASH_TIMEOUT_MS)
+    # building options must not have mutated the process env
+    assert os.environ["SMTP_PASSWORD"] == "pw-leak"

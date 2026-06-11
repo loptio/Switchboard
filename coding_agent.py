@@ -40,7 +40,6 @@ ANTHROPIC_API_KEY (that bills the paid API) — same rule as llm.py.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 from dataclasses import dataclass, field
@@ -123,34 +122,29 @@ def _is_secret_env(name: str) -> bool:
     return name in _ENV_SECRET_NAMES or any(s in upper for s in _ENV_SECRET_SUBSTRINGS)
 
 
-@contextlib.contextmanager
-def _scrubbed_env():
-    """Run the wrapped block with the worker's SECRETS removed from `os.environ`, then
-    restore it. Keeps everything else (so the CLI's subscription auth still works) and
-    drops only secret-shaped keys (so the sandboxed bash can't read them).
+def _secret_overlay() -> dict[str, str]:
+    """An `options.env` overlay that NEUTRALISES the worker's secrets for the CLI
+    subprocess WITHOUT mutating the shared `os.environ` — the SUBPROCESS-level scrub.
 
-    LOAD-BEARING: the SDK inherits `os.environ` wholesale into the CLI subprocess, and
-    `options.env` is only an OVERLAY (it cannot REMOVE inherited keys). So we pop the
-    secrets here for the duration of the (blocking, single-threaded) SDK call. Restored
-    in `finally` even if the SDK errors.
+    The SDK spawns the CLI with `{**os.environ, **options.env}` (subprocess_cli.py — a
+    MERGE: options.env can OVERRIDE a key but cannot DELETE an inherited one). So we can't
+    make a secret ABSENT, but we override each to "": the sandboxed bash then sees an
+    EMPTY value, never the real one. The secret VALUE never reaches the subprocess, which
+    is the whole threat (a command's output / the diff exfiltrates via the model channel,
+    which network-deny can't stop).
 
-    CONCURRENCY CONSTRAINT (known, not a leak — a correctness limit): this mutates the
-    PROCESS-GLOBAL os.environ for the whole agent-run window. Safe TODAY because the only
-    callers run env-isolated: `run-once` is its own process, and the scheduler worker
-    executes runs SEQUENTIALLY (BlockingScheduler, max_instances=1, a one-at-a-time drain
-    loop — scheduler.py), so no other run reads the scrubbed env during the window. It
-    becomes a hazard ONLY IF the worker is made CONCURRENT (thread pool / max_instances>1)
-    AND a coding run overlaps an env-reading run (e.g. a digest emailing via
-    SMTP_PASSWORD): that run would see the scrubbed env and fail. When coding runs move
-    into a shared concurrent worker, fix it then — run coding solo in the worker, or make
-    the clean env SUBPROCESS-level (don't touch the shared os.environ)."""
-    secrets = {k: os.environ[k] for k in list(os.environ) if _is_secret_env(k)}
-    for k in secrets:
-        os.environ.pop(k, None)
-    try:
-        yield
-    finally:
-        os.environ.update(secrets)
+    CONCURRENCY-SAFE (this is the point — replaces the old process-global os.environ pop):
+    we READ os.environ to find the secret-shaped keys but NEVER write it. So an overlapping
+    env-reading run in the SAME process (e.g. a digest emailing via SMTP_PASSWORD, once the
+    worker is made concurrent) still sees the real secret in its own env. The single-
+    sequential-worker invariant is no longer load-bearing for secret isolation.
+
+    Empty (not absent) is sufficient: the scrubbed keys are the WORKER's secrets, which the
+    CLI never `in os.environ`-checks; the only auth-relevant secret-shaped key,
+    ANTHROPIC_API_KEY, is UNSET under subscription auth (so it's not in the overlay), and
+    were it ever set, overriding it to "" is exactly the desired fall-back-to-subscription.
+    Same denylist (`_is_secret_env`) as before — only the MECHANISM moved subprocess-level."""
+    return {k: "" for k in os.environ if _is_secret_env(k)}
 
 
 def _bash_env() -> dict[str, str]:
@@ -354,10 +348,11 @@ def _build_options(
             "excludedCommands": [],  # nothing runs outside it (not even git/docker)
             # no "allowedDomains" -> network DENIED by default (decision E)
         },
-        # Phase 10b-2 — the per-command bash timeouts (decision D). The worker's SECRETS
-        # are removed from the inherited env by `_scrubbed_env()` in run_coding_agent (the
-        # SDK merges options.env OVER os.environ, so the scrub must happen there).
-        env=_bash_env(),
+        # Phase 10b-2 — the per-command bash timeouts (decision D) PLUS the secret scrub:
+        # `_secret_overlay()` overrides every worker secret to "" in options.env, which the
+        # SDK merges OVER os.environ — so the sandboxed bash inherits empty secrets, not the
+        # real ones, without ever touching the shared os.environ (concurrency-safe).
+        env={**_bash_env(), **_secret_overlay()},
     )
 
 
@@ -424,11 +419,12 @@ def run_coding_agent(
         max_tool_calls=max_tool_calls, max_budget_usd=max_budget_usd, counter=counter,
     )
     try:
-        # Remove the worker's secrets from the process env for the duration of the SDK
-        # call, so the sandboxed bash never inherits them (the sandbox does not cover env);
-        # the CLI keeps the rest of its environment, so subscription auth still works.
-        with _scrubbed_env():
-            messages = anyio.run(_arun, prompt, options)
+        # The worker's secrets are neutralised SUBPROCESS-level via options.env
+        # (`_secret_overlay()` in _build_options): the sandboxed bash inherits empty
+        # secrets, not the real ones (the sandbox does not cover env), while the shared
+        # os.environ is left intact — so subscription auth still works AND a concurrent
+        # env-reading run is unaffected.
+        messages = anyio.run(_arun, prompt, options)
     except Exception as exc:
         log.exception("coding agent run failed")
         return CodingResult(
