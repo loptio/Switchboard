@@ -22,8 +22,12 @@ tests are the no-regression proof.
 
 from __future__ import annotations
 
+import inspect
+
+from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, START, StateGraph
 
+import monitor
 from workflows import END as _END_SENTINEL
 from workflows import Node, WorkflowDef
 
@@ -31,6 +35,36 @@ from workflows import Node, WorkflowDef
 def _target(name: str):
     """Map a WorkflowDef edge target to a langgraph node (or the END sentinel)."""
     return END if name == _END_SENTINEL else name
+
+
+def _monitored(node_id: str, handler):
+    """Wrap a node handler so it reports running → done/failed/awaiting to the
+    installed monitor (monitor.emit), preserving the handler's arity and behaviour.
+
+    - No monitor installed (every offline test) → emit() is a no-op, so this adds
+      one dict lookup and is behaviourally identical.
+    - A `human_review` handler suspends via interrupt(), which raises GraphInterrupt;
+      that is NOT a failure — report 'awaiting' and re-raise so LangGraph suspends.
+    - Some handlers take (state); others take (state, config). LangGraph inspects the
+      arity, so the wrapper must call the inner handler with exactly its own params
+      while itself accepting config (it always reports, regardless of inner arity).
+    """
+    wants_config = len(inspect.signature(handler).parameters) >= 2
+
+    def wrapped(state, config=None):
+        monitor.emit(node_id, "running")
+        try:
+            result = handler(state, config) if wants_config else handler(state)
+        except GraphInterrupt:
+            monitor.emit(node_id, "awaiting")
+            raise
+        except Exception:
+            monitor.emit(node_id, "failed")
+            raise
+        monitor.emit(node_id, "done")
+        return result
+
+    return wrapped
 
 
 def build_graph(
@@ -69,14 +103,14 @@ def _add_nodes(g: StateGraph, nodes, *, node_handlers: dict, composers: dict) ->
                 raise ValueError(
                     f"node {node.id!r} references unregistered handler {node.handler_ref!r}"
                 ) from None
-            g.add_node(node.id, handler)
+            g.add_node(node.id, _monitored(node.id, handler))
         elif node.kind in ("fan_out", "gather"):
             # Implemented in Unit 3 (brief). Imported lazily so Unit 2 (digest) needs
             # nothing of it.
             from engine_fanout import make_fan_out_node, make_gather_node  # noqa: PLC0415
 
             maker = make_fan_out_node if node.kind == "fan_out" else make_gather_node
-            g.add_node(node.id, maker(node, node_handlers=node_handlers, composers=composers))
+            g.add_node(node.id, _monitored(node.id, maker(node, node_handlers=node_handlers, composers=composers)))
         else:
             raise ValueError(f"node {node.id!r} has unknown kind {node.kind!r}")
 

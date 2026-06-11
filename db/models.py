@@ -18,6 +18,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     MetaData,
     Table,
     Text,
@@ -48,6 +49,8 @@ _JSON = JSON().with_variant(JSONB(), "postgresql")
 _TS = DateTime(timezone=True)
 # String-form UUIDs: native UUID on Postgres, CHAR(32) elsewhere.
 _UUID = Uuid(as_uuid=False)
+# Plain integer (per-run sequence counter).
+_INT = Integer()
 
 
 def _in_list(col: str, values: tuple[str, ...]) -> str:
@@ -100,6 +103,31 @@ outputs = Table(
     Column("created_at", _TS, nullable=False),
 )
 Index("ix_outputs_run_id", outputs.c.run_id)
+
+# A run-node event = one transition of one workflow node during a run (Phase 11
+# monitoring). The engine emits running/done/failed/awaiting as each node executes;
+# the control plane reads the per-node latest to draw a live graph. `seq` is a
+# per-run monotonic counter (set in the DAO) so events order deterministically even
+# when timestamps tie (tests inject a fixed `now`). Best-effort — a failed write
+# never breaks the run, so this is observability, not a correctness dependency.
+NODE_EVENT_STATUSES: tuple[str, ...] = ("running", "done", "failed", "awaiting")
+run_node_events = Table(
+    "run_node_events",
+    metadata,
+    Column("id", _UUID, primary_key=True),
+    Column(
+        "run_id",
+        _UUID,
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("node_id", Text, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("seq", _INT, nullable=False),  # per-run monotonic order
+    Column("at", _TS, nullable=False),
+    CheckConstraint(_in_list("status", NODE_EVENT_STATUSES), name="ck_node_event_status"),
+)
+Index("ix_run_node_events_run_id", run_node_events.c.run_id)
 
 # A Schedule = a declarative cron schedule for a workflow (first-class data).
 schedules = Table(

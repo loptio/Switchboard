@@ -20,6 +20,8 @@ from .dao import (
     list_due_schedules,
     list_enabled_schedules,
     list_outputs,
+    list_node_events,
+    record_node_event,
     list_runs,
     list_schedules,
     mark_awaiting_input,
@@ -51,12 +53,13 @@ from .dao import (
 )
 from .engine import configure, drop_db, get_engine, init_db, is_configured
 from .models import RUN_STATUSES, RUN_TRIGGERS, metadata
-from .records import AgentDefRow, Output, Run, Schedule, User, WorkflowDefRow
+from .records import AgentDefRow, NodeEvent, Output, Run, Schedule, User, WorkflowDefRow
 
 __all__ = [
     # records
     "Run",
     "Output",
+    "NodeEvent",
     "Schedule",
     "User",
     "WorkflowDefRow",
@@ -77,6 +80,9 @@ __all__ = [
     # outputs
     "save_output",
     "list_outputs",
+    # node events (Phase 11 monitoring)
+    "record_node_event",
+    "list_node_events",
     # schedules
     "create_schedule",
     "get_schedule",

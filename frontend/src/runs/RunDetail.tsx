@@ -6,6 +6,7 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { Markdown } from "../components/Markdown";
 import { Spinner } from "../components/Spinner";
 import { formatTime } from "../lib/format";
+import { WorkflowGraph } from "../workflows/WorkflowGraph";
 import { CodingDiff, ReviewPanel } from "./ReviewPanel";
 import { RunStatusBadge } from "./RunStatusBadge";
 import { useRun } from "./useRun";
@@ -13,7 +14,8 @@ import styles from "./RunDetail.module.css";
 
 export function RunDetail() {
   const { id = "" } = useParams();
-  const { run, outputs, review, loading, error, notFound, reload } = useRun(id);
+  const { run, outputs, review, definition, nodeStatuses, loading, error, notFound, reload } =
+    useRun(id);
 
   if (loading) {
     return (
@@ -43,6 +45,9 @@ export function RunDetail() {
   const coding = outputs.find((o) => o.type === "coding");
   const digest = outputs.find((o) => o.type === "digest") ?? outputs[0];
   const inProgress = run.status === "pending" || run.status === "running";
+  // "Live" includes awaiting_input — the run is paused at a gate, still active, and
+  // the graph keeps polling and lighting up nodes.
+  const live = inProgress || run.status === "awaiting_input";
 
   return (
     <section>
@@ -75,6 +80,22 @@ export function RunDetail() {
       </dl>
 
       {run.error && <ErrorBanner message={run.error} />}
+
+      {definition && (
+        <>
+          <h2 className={styles.outputTitle}>
+            Workflow{" "}
+            {live && (
+              <span className={styles.liveTag} role="status">
+                ● live
+              </span>
+            )}
+          </h2>
+          <Card>
+            <WorkflowGraph definition={definition} statuses={nodeStatuses} />
+          </Card>
+        </>
+      )}
 
       {run.status === "awaiting_input" ? (
         <ReviewPanel runId={id} review={review} onResolved={() => void reload()} />

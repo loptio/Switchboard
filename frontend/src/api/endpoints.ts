@@ -4,6 +4,7 @@ import { apiFetch } from "./client";
 import type {
   AgentDef,
   Manifest,
+  NodeEvent,
   Output,
   ReviewPayload,
   Run,
@@ -43,6 +44,9 @@ export const getRunOutput = (id: string) => apiFetch<Output[]>(`/runs/${id}/outp
 
 /** The human-review payload for an awaiting_input run (or {} if none). */
 export const getRunReview = (id: string) => apiFetch<ReviewPayload>(`/runs/${id}/review`);
+
+/** Phase 11 live monitoring: a run's per-node event timeline. */
+export const getRunProgress = (id: string) => apiFetch<NodeEvent[]>(`/runs/${id}/progress`);
 
 /** Per-run coding intake (Phase 10b-1) — the task + workspace for a coding run. */
 export interface CodingTriggerFields {

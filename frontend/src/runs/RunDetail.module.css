@@ -51,6 +51,22 @@
   font-size: 16px;
   margin: var(--space-5) 0 var(--space-3);
 }
+.liveTag {
+  font-size: 12px;
+  font-weight: 600;
+  color: #16a34a;
+  margin-left: var(--space-2);
+  animation: liveblink 1.3s ease-in-out infinite;
+}
+@keyframes liveblink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
 
 .pending {
   padding: var(--space-6);

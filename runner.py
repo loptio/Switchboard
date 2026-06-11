@@ -38,6 +38,7 @@ import checkpoint
 import components
 import db
 import defs_resolve
+import monitor
 import workflows
 import workspace
 from agent import Digest, summarize_agent, verify_agent
@@ -77,6 +78,19 @@ from output import (
 from sources import gather_sources
 
 log = logging.getLogger(__name__)
+
+
+# --- per-node monitoring (Phase 11) ----------------------------------------
+# Install a run-bound node monitor for the duration of a graph execution. The
+# engine's node wrapper (engine._monitored) calls it as each node runs; here we
+# persist the transition. Best-effort: record_node_event swallows a non-UUID id and
+# monitor.emit swallows any raise, so monitoring never breaks a run. Offline tests
+# that don't go through these entry points install no monitor → emit() is a no-op.
+def _node_monitor(run_id: str, now: datetime | None):
+    def emit(node_id: str, status: str) -> None:
+        db.record_node_event(run_id, node_id, status, now=now)
+
+    return emit
 
 
 # --- agent assembly (Phase 8) ----------------------------------------------
@@ -335,6 +349,15 @@ def _run_coding_pipeline(
 
 
 def _run_pipeline(
+    run: db.Run, cfg: Config, now: datetime | None, *, coding_fn=None
+) -> db.Run:
+    """Run the non-interactive pipeline with per-node monitoring installed (Phase 11)
+    for the duration of the graph execution."""
+    with monitor.monitoring(_node_monitor(run.id, now)):
+        return _run_pipeline_inner(run, cfg, now, coding_fn=coding_fn)
+
+
+def _run_pipeline_inner(
     run: db.Run, cfg: Config, now: datetime | None, *, coding_fn=None
 ) -> db.Run:
     """Run the (non-interactive) pipeline for an already-running `run`.
@@ -706,15 +729,16 @@ def run_review_once(
         db.mark_running(run.id, now=now)
         log.info("run %s started (trigger=manual, meta review)", run.id)
         wf_arg = None if wf is workflows.WORKFLOWS.get(workflow) else wf
-        final = _run_meta_review_claimed(
-            run, cfg, now, wf=wf, wf_arg=wf_arg, checkpointer=checkpointer, draft_fn=draft_fn
-        )
+        with monitor.monitoring(_node_monitor(run.id, now)):
+            final = _run_meta_review_claimed(
+                run, cfg, now, wf=wf, wf_arg=wf_arg, checkpointer=checkpointer, draft_fn=draft_fn
+            )
         return final, None
     run = db.create_run(workflow=workflow, trigger="manual", now=now)
     db.mark_running(run.id, now=now)
     log.info("run %s started (trigger=manual, human-review)", run.id)
     try:
-        with _checkpointer_cm(checkpointer) as cp:
+        with monitor.monitoring(_node_monitor(run.id, now)), _checkpointer_cm(checkpointer) as cp:
             items = fetch_feed(cfg.feed_url)
             outcome = start_review_run(
                 items,
@@ -765,12 +789,13 @@ def resume_run(
         _wf = None
     if _wf is not None and _wf.output_ref == "meta":
         wf_arg = None if _wf is workflows.WORKFLOWS.get(run.workflow) else _wf
-        final = _resume_meta_claimed(
-            run, cfg, now, decision, wf_arg=wf_arg, checkpointer=checkpointer
-        )
+        with monitor.monitoring(_node_monitor(run.id, now)):
+            final = _resume_meta_claimed(
+                run, cfg, now, decision, wf_arg=wf_arg, checkpointer=checkpointer
+            )
         return final, None
     try:
-        with _checkpointer_cm(checkpointer) as cp:
+        with monitor.monitoring(_node_monitor(run.id, now)), _checkpointer_cm(checkpointer) as cp:
             outcome = resume_review_run(
                 thread_id=run_id,
                 checkpointer=cp,
@@ -790,6 +815,25 @@ def resume_run(
 
 
 def _run_review_claimed(
+    run: db.Run,
+    cfg: Config,
+    now: datetime | None,
+    *,
+    checkpointer=None,
+    summarize_fn=None,
+    verify_fn=None,
+    coding_fn=None,
+    draft_fn=None,
+) -> db.Run:
+    """Start an interruptible REVIEW run with per-node monitoring (Phase 11)."""
+    with monitor.monitoring(_node_monitor(run.id, now)):
+        return _run_review_claimed_inner(
+            run, cfg, now, checkpointer=checkpointer, summarize_fn=summarize_fn,
+            verify_fn=verify_fn, coding_fn=coding_fn, draft_fn=draft_fn,
+        )
+
+
+def _run_review_claimed_inner(
     run: db.Run,
     cfg: Config,
     now: datetime | None,
@@ -878,6 +922,26 @@ def _run_coding_review_claimed(
 
 
 def resume_claimed_run(
+    run: db.Run,
+    *,
+    config: Config | None = None,
+    now: datetime | None = None,
+    checkpointer=None,
+    summarize_fn=None,
+    verify_fn=None,
+    coding_fn=None,
+    draft_fn=None,
+) -> db.Run:
+    """Resume an already-CLAIMED awaiting_input run (Phase 11 monitoring installed)."""
+    with monitor.monitoring(_node_monitor(run.id, now)):
+        return _resume_claimed_run_inner(
+            run, config=config, now=now, checkpointer=checkpointer,
+            summarize_fn=summarize_fn, verify_fn=verify_fn, coding_fn=coding_fn,
+            draft_fn=draft_fn,
+        )
+
+
+def _resume_claimed_run_inner(
     run: db.Run,
     *,
     config: Config | None = None,

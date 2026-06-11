@@ -91,6 +91,14 @@ export interface WorkflowDef {
   updated_at: string | null;
 }
 
+// Phase 11 live monitoring: one node transition during a run.
+export interface NodeEvent {
+  node_id: string;
+  status: "running" | "done" | "failed" | "awaiting";
+  seq: number;
+  at: string;
+}
+
 export interface AgentDefinition {
   id: string;
   system_prompt: string;

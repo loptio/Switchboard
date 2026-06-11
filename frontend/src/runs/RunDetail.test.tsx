@@ -3,11 +3,41 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../api/client";
-import type { Output, Run } from "../api/types";
+import type { NodeEvent, Output, Run, WorkflowDef } from "../api/types";
 import { RunDetail } from "./RunDetail";
 
 vi.mock("../api/endpoints");
-import { getRun, getRunOutput } from "../api/endpoints";
+import {
+  getRun,
+  getRunOutput,
+  getRunProgress,
+  getRunReview,
+  getWorkflowDef,
+} from "../api/endpoints";
+
+const NEWS_DEF: WorkflowDef = {
+  def_id: "news",
+  name: "news",
+  builtin: true,
+  created_at: null,
+  updated_at: null,
+  description: null,
+  definition: {
+    id: "news",
+    entry: "summarize",
+    params: {},
+    output_ref: "digest",
+    nodes: [
+      {
+        id: "summarize",
+        kind: "step",
+        handler_ref: "digest_summarize",
+        branch: { predicate_ref: "p", routes: { verify: "verify", end: "__end__" } },
+      },
+      { id: "verify", kind: "step", handler_ref: "digest_verify", next: "__end__" },
+    ],
+  },
+};
 
 const SUCCESS_RUN: Run = {
   id: "r1",
@@ -47,6 +77,11 @@ describe("RunDetail", () => {
   beforeEach(() => {
     vi.mocked(getRun).mockReset();
     vi.mocked(getRunOutput).mockReset();
+    // useRun also fetches the workflow def (for the graph) + the progress timeline;
+    // default them so the fire-and-forget calls resolve cleanly.
+    vi.mocked(getWorkflowDef).mockResolvedValue(NEWS_DEF);
+    vi.mocked(getRunProgress).mockResolvedValue([]);
+    vi.mocked(getRunReview).mockResolvedValue({});
   });
   afterEach(() => vi.clearAllMocks());
 
@@ -113,5 +148,22 @@ describe("RunDetail", () => {
 
     expect(await screen.findByText(/git internals/i)).toBeInTheDocument();
     expect(screen.getByText(/hooks\/pre-commit/)).toBeInTheDocument();
+  });
+
+  it("draws the workflow graph and overlays live per-node status", async () => {
+    const events: NodeEvent[] = [
+      { node_id: "summarize", status: "done", seq: 0, at: "2026-06-08T00:00:01Z" },
+      { node_id: "verify", status: "running", seq: 1, at: "2026-06-08T00:00:02Z" },
+    ];
+    vi.mocked(getRun).mockResolvedValue({ ...SUCCESS_RUN, status: "running" });
+    vi.mocked(getRunOutput).mockResolvedValue([]);
+    vi.mocked(getRunProgress).mockResolvedValue(events);
+
+    const { container } = renderDetail();
+
+    // the graph renders + the live tag, and the running node shows a pulse indicator
+    expect(await screen.findByText("● live")).toBeInTheDocument();
+    expect(await screen.findByRole("img", { name: /workflow graph/i })).toBeInTheDocument();
+    await vi.waitFor(() => expect(container.querySelector("circle")).toBeInTheDocument());
   });
 });

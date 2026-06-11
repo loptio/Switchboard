@@ -68,6 +68,16 @@ class OutputOut(BaseModel):
     created_at: datetime
 
 
+class NodeEventOut(BaseModel):
+    """One workflow-node transition during a run (Phase 11 live monitoring)."""
+
+    model_config = _FROM_RECORD
+    node_id: str
+    status: str
+    seq: int
+    at: datetime
+
+
 # --- schedules (CRUD) ------------------------------------------------------
 
 class ScheduleOut(BaseModel):

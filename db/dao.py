@@ -27,16 +27,18 @@ from sqlalchemy.exc import IntegrityError
 
 from .engine import get_engine
 from .models import (
+    NODE_EVENT_STATUSES,
     RUN_STATUSES,
     RUN_TRIGGERS,
     agent_defs,
     outputs,
+    run_node_events,
     runs,
     schedules,
     users,
     workflow_defs,
 )
-from .records import AgentDefRow, Output, Run, Schedule, User, WorkflowDefRow
+from .records import AgentDefRow, NodeEvent, Output, Run, Schedule, User, WorkflowDefRow
 
 # Sentinel for "argument not supplied" where None is a meaningful value.
 _UNSET = object()
@@ -362,6 +364,69 @@ def list_outputs(run_id: str) -> list[Output]:
             .all()
         )
     return [Output.from_row(r) for r in rows]
+
+
+# --- Run node events (Phase 11 monitoring) --------------------------------
+
+def record_node_event(
+    run_id: str,
+    node_id: str,
+    status: str,
+    *,
+    now: datetime | None = None,
+) -> NodeEvent | None:
+    """Append a node-transition event for a run; return it (None if the run id is
+    not a UUID — a defensive no-op, since this is best-effort observability).
+
+    `seq` is a per-run monotonic counter computed here, so events order
+    deterministically even when `at` ties (tests inject a fixed `now`). Safe under
+    the single-worker sequential execution the system already relies on.
+    """
+    if status not in NODE_EVENT_STATUSES:
+        raise ValueError(f"invalid node-event status {status!r}")
+    if not _is_uuid(run_id):
+        return None
+    eid = _new_id()
+    at = _to_utc(now) if now is not None else _now()
+    from sqlalchemy import func
+
+    with get_engine().begin() as conn:
+        seq = (
+            conn.execute(
+                select(func.count())
+                .select_from(run_node_events)
+                .where(run_node_events.c.run_id == run_id)
+            ).scalar()
+            or 0
+        )
+        conn.execute(
+            run_node_events.insert().values(
+                id=eid,
+                run_id=run_id,
+                node_id=node_id,
+                status=status,
+                seq=seq,
+                at=at,
+            )
+        )
+    return NodeEvent(id=eid, run_id=run_id, node_id=node_id, status=status, seq=seq, at=at)
+
+
+def list_node_events(run_id: str) -> list[NodeEvent]:
+    """A run's node events in order (by seq). Empty for an unknown / non-UUID id."""
+    if not _is_uuid(run_id):
+        return []
+    with get_engine().connect() as conn:
+        rows = (
+            conn.execute(
+                select(run_node_events)
+                .where(run_node_events.c.run_id == run_id)
+                .order_by(run_node_events.c.seq.asc())
+            )
+            .mappings()
+            .all()
+        )
+    return [NodeEvent.from_row(r) for r in rows]
 
 
 # --- Schedules ------------------------------------------------------------

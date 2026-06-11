@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 import db
 from api.deps import get_current_user, require_csrf
-from api.schemas import OutputOut, ResumeIn, RunCreate, RunOut
+from api.schemas import NodeEventOut, OutputOut, ResumeIn, RunCreate, RunOut
 
 router = APIRouter(
     prefix="/runs",
@@ -65,6 +65,17 @@ def get_run_output(run_id: str) -> list[db.Output]:
     if db.get_run(run_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
     return [o for o in db.list_outputs(run_id) if o.type != "review"]
+
+
+@router.get("/{run_id}/progress", response_model=list[NodeEventOut])
+def get_run_progress(run_id: str) -> list[db.NodeEvent]:
+    """A run's per-node event timeline (Phase 11 live monitoring), in order. The UI
+    reduces it to the latest status per node and overlays it on the workflow graph.
+    404 if the run is unknown; an empty list means no node has run yet (or the run
+    predates monitoring)."""
+    if db.get_run(run_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+    return db.list_node_events(run_id)
 
 
 @router.get("/{run_id}/review")

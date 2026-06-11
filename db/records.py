@@ -83,6 +83,29 @@ class Output:
 
 
 @dataclass(frozen=True)
+class NodeEvent:
+    """One workflow-node transition during a run (Phase 11 monitoring)."""
+
+    id: str
+    run_id: str
+    node_id: str
+    status: str
+    seq: int
+    at: datetime
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any]) -> "NodeEvent":
+        return cls(
+            id=str(row["id"]),
+            run_id=str(row["run_id"]),
+            node_id=row["node_id"],
+            status=row["status"],
+            seq=int(row["seq"]),
+            at=_utc(row["at"]),
+        )
+
+
+@dataclass(frozen=True)
 class User:
     id: str
     username: str
