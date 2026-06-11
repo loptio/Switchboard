@@ -199,3 +199,18 @@ def test_auto_review_skips_a_failed_coder_result():
         "t", "/tmp/ws", model="m", coding_fn=seam, reviewer_fn=reviewer, auto_review=True
     )
     assert reviewer.calls == [] and out.review_verdict is None
+
+
+def test_auto_review_skips_a_git_tampered_result():
+    # A `.git`-tampered result has nothing safe to review → reviewer not called; the
+    # family still refuses to finalize it (the 10b-2 guard, tested in the runner).
+    seam = _ScriptedSeam(CodingResult(
+        summary="s", diff="d", changed_files=["f"], status="completed",
+        git_tampered=["hooks/pre-commit"],
+    ))
+    reviewer = _ScriptedReviewer(_approve())
+    out = CO.build_coding(
+        "t", "/tmp/ws", model="m", coding_fn=seam, reviewer_fn=reviewer, auto_review=True
+    )
+    assert reviewer.calls == [] and out.review_verdict is None
+    assert out.git_tampered == ["hooks/pre-commit"]  # preserved for the finalize guard

@@ -47,6 +47,13 @@ DEFAULT_MAX_BUDGET_USD = CODING_DEF.params["max_budget_usd"]
 DEFAULT_MAX_REVIEW_ROUNDS = CODING_DEF.params["max_review_rounds"]  # Phase 10c
 
 
+def _recursion_limit(max_review_rounds: int) -> int:
+    """Bound the engine's own loop generously relative to the review-round cap, so a
+    custom max_review_rounds never trips LangGraph's default recursion guard (25).
+    Each review round is ~2 super-steps (coding + review); +10 covers the gates."""
+    return 2 * (max_review_rounds + 1) + 10
+
+
 # --- dict-state converters --------------------------------------------------
 def _result_to_dict(result: CodingResult) -> dict:
     return asdict(result)
@@ -336,7 +343,10 @@ def build_coding(
     runs the coder↔reviewer dialogue (bounded by `max_review_rounds`). Raises
     RuntimeError if the graph somehow yields no result."""
     app = _APP if wf is None else _builder_for(wf).compile()
-    config = {"configurable": {"coding_fn": coding_fn, "reviewer_fn": reviewer_fn}}
+    config = {
+        "configurable": {"coding_fn": coding_fn, "reviewer_fn": reviewer_fn},
+        "recursion_limit": _recursion_limit(max_review_rounds),
+    }
     final = app.invoke(
         _initial_state(
             task, workspace, model,
@@ -371,11 +381,16 @@ class CodingReviewOutcome:
     result: CodingResult | None = None
 
 
-def _coding_config(thread_id: str, coding_fn, reviewer_fn=review_coding) -> dict:
+def _coding_config(
+    thread_id: str, coding_fn, reviewer_fn=review_coding,
+    max_review_rounds: int = DEFAULT_MAX_REVIEW_ROUNDS,
+) -> dict:
     return {
         "configurable": {
             "thread_id": thread_id, "coding_fn": coding_fn, "reviewer_fn": reviewer_fn,
-        }
+        },
+        # Cover a human-redo that re-runs the full auto-review dialogue (Phase 10c).
+        "recursion_limit": _recursion_limit(max_review_rounds),
     }
 
 
@@ -416,7 +431,7 @@ def start_coding_review_run(
             max_turns=max_turns, max_tool_calls=max_tool_calls, max_budget_usd=max_budget_usd,
             review=True, auto_review=auto_review, max_review_rounds=max_review_rounds,
         ),
-        config=_coding_config(thread_id, coding_fn, reviewer_fn),
+        config=_coding_config(thread_id, coding_fn, reviewer_fn, max_review_rounds),
     )
     return _outcome_from_state(final)
 
@@ -428,6 +443,7 @@ def resume_coding_review_run(
     decision: dict,
     coding_fn: Callable[..., CodingResult] = run_coding_agent,
     reviewer_fn: Callable[..., dict] = review_coding,
+    max_review_rounds: int = DEFAULT_MAX_REVIEW_ROUNDS,
     wf: WorkflowDef | None = None,
 ) -> CodingReviewOutcome:
     """Resume a suspended coding run, injecting `decision` into the waiting interrupt()
@@ -437,6 +453,7 @@ def resume_coding_review_run(
     dialogue when it was on) and re-presents (suspended again); approve completes."""
     app = _builder_for(wf).compile(checkpointer=checkpointer)
     final = app.invoke(
-        Command(resume=decision), config=_coding_config(thread_id, coding_fn, reviewer_fn)
+        Command(resume=decision),
+        config=_coding_config(thread_id, coding_fn, reviewer_fn, max_review_rounds),
     )
     return _outcome_from_state(final)
