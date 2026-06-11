@@ -366,7 +366,11 @@ def _finalize_coding(run: db.Run, result: CodingResult, cfg: Config, now: dateti
     commit = None
     if cfg.coding_auto_commit:
         try:
-            commit = workspace.git_commit(workspace_dir, _commit_message(run, result, cfg))
+            # Commit ONLY the agent's changed files — never sweep in files a user may
+            # have edited elsewhere while the run was suspended for review.
+            commit = workspace.git_commit(
+                workspace_dir, _commit_message(run, result, cfg), result.changed_files
+            )
             if commit:
                 log.info("run %s: auto-committed as %s", run.id, commit)
         except Exception:  # noqa: BLE001 — a commit must never fail the run
@@ -381,7 +385,11 @@ def _commit_message(run: db.Run, result: CodingResult, cfg: Config) -> str:
     """The auto-commit message: a concise subject from the agent's summary (else the
     task), the task as the body, and provenance (the agent co-author + the run id)."""
     task, _ = _coding_inputs(run, cfg)
-    subject = (result.summary or task or "coding agent change").strip().splitlines()[0]
+    # First non-empty line of summary, else task, else a default (a whitespace-only
+    # summary is truthy but strips to "", so guard the [0]).
+    raw = (result.summary or "").strip() or (task or "").strip() or "coding agent change"
+    lines = raw.splitlines()
+    subject = lines[0] if lines else "coding agent change"
     if len(subject) > 72:
         subject = subject[:69] + "…"
     return (

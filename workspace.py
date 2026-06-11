@@ -241,17 +241,24 @@ _COMMIT_NAME = "Switchboard coding agent"
 _COMMIT_EMAIL = "noreply@anthropic.com"
 
 
-def git_commit(root: str | os.PathLike, message: str) -> str | None:
-    """Stage all working-tree changes and commit them; return the short commit hash,
-    or None if there is nothing to commit / the workspace is not a git repo / git
-    fails (best-effort — a commit failure never breaks a run). Worker-side ONLY: the
-    coder has no commit access; this runs after the run succeeded and the diff was
-    already reviewed (Phase 10b-2 commit automation).
+def git_commit(root: str | os.PathLike, message: str, paths: list[str]) -> str | None:
+    """Commit EXACTLY the agent's changed `paths` and return the short commit hash, or
+    None if there is nothing to commit / the workspace is not a git repo / git fails
+    (best-effort — a commit failure never breaks a run). Worker-side ONLY: the coder
+    has no commit access; this runs after the run succeeded and the diff was reviewed
+    (Phase 10b-2 commit automation).
+
+    Stages ONLY `paths` (`git add -A -- <paths>`, which also captures a deletion within
+    them), NOT `git add -A` over the whole tree: a coding run can suspend at the human
+    review gate, and a file a user edits ELSEWHERE while it is suspended must never be
+    swept into the agent's commit. `paths` is the agent's git-diff changed files.
 
     Identity is passed via `-c` so the commit succeeds without repo git config."""
-    if not is_git_repo(root) or git_is_clean(root):
-        return None  # nothing to commit
-    if _git(root, "add", "-A").returncode != 0:
+    if not is_git_repo(root) or not paths:
+        return None
+    _git(root, "add", "-A", "--", *paths)
+    # Nothing actually staged (paths vanished / unchanged) → nothing to commit.
+    if _git(root, "diff", "--cached", "--quiet").returncode == 0:
         return None
     commit = _git(
         root,

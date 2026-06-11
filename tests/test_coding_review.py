@@ -266,3 +266,43 @@ def test_review_endpoint_returns_coding_payload(client, user):
     rev = client.get(f"/runs/{run.id}/review", headers=csrf_headers(client))
     assert rev.status_code == 200
     assert rev.json()["coding"]["changed_files"] == ["x.py"]
+
+
+# --- Phase 10b-2: auto-commit on the review-approve path (review BLOCKER fix) ----
+
+def test_auto_commit_on_review_approve_commits_only_the_agent_file(database, tmp_path, git_repo):
+    """A coding review run that auto-commits on approval must commit ONLY the agent's
+    file — even if a user edits an UNRELATED file while the run is suspended (the
+    adversarial-review blocker: git add -A would have swept the user's file in)."""
+    cfg = Config(
+        feed_url="x", count=1, output_dir=tmp_path / "out", model="m",
+        coding_task="add a hello module", coding_workspace=git_repo,
+        coding_auto_commit=True,
+    )
+    seam = _FakeSeam()  # the agent writes hello.py
+    saver = _saver()
+    db.create_run(workflow="coding", trigger="manual", review=True,
+                  coding_workspace=str(git_repo), now=T0)
+    claimed = db.claim_next_pending_run(now=T0)
+    runner.execute_claimed_run(claimed, config=cfg, now=T0, checkpointer=saver, coding_fn=seam)
+    assert db.get_run(claimed.id).status == "awaiting_input"
+
+    # while suspended for review, a human edits an UNRELATED file in the workspace.
+    (git_repo / "user_unrelated.py").write_text("# human's work\n", encoding="utf-8")
+
+    db.set_run_decision(claimed.id, {"action": "approve"})
+    resumable = db.claim_next_resumable_run(now=T0)
+    runner.resume_claimed_run(resumable, config=cfg, now=T0, checkpointer=saver, coding_fn=seam)
+
+    done = db.get_run(claimed.id)
+    assert done.status == "success"
+    assert done.meta and done.meta.get("commit")
+    # ONLY hello.py was committed; the user's unrelated edit is left uncommitted.
+    import subprocess
+    committed = subprocess.run(
+        ["git", "-C", str(git_repo), "show", "--name-only", "--pretty=", "HEAD"],
+        capture_output=True, text=True,
+    ).stdout.split()
+    assert committed == ["hello.py"]
+    assert (git_repo / "user_unrelated.py").exists()
+    assert not workspace.git_is_clean(git_repo)  # the user's file is still there, uncommitted

@@ -246,7 +246,7 @@ def test_snapshot_then_diff_round_trip(tmp_path):
 
 def test_git_commit_commits_changes_and_returns_hash(git_repo):
     (git_repo / "new.py").write_text("def f():\n    return 1\n", encoding="utf-8")
-    h = workspace.git_commit(git_repo, "add f()\n\nTask: add a function")
+    h = workspace.git_commit(git_repo, "add f()\n\nTask: add a function", ["new.py"])
     assert h and len(h) >= 7
     # the tree is clean again (the change was committed) and the message stuck
     assert workspace.git_is_clean(git_repo) is True
@@ -259,10 +259,27 @@ def test_git_commit_commits_changes_and_returns_hash(git_repo):
 
 
 def test_git_commit_nothing_to_commit_returns_none(git_repo):
-    assert workspace.git_commit(git_repo, "noop") is None  # clean tree
+    assert workspace.git_commit(git_repo, "noop", []) is None          # no paths
+    assert workspace.git_commit(git_repo, "noop", ["nope.py"]) is None  # path unchanged
 
 
 def test_git_commit_non_git_returns_none(tmp_path):
     plain = tmp_path / "plain"
     plain.mkdir()
-    assert workspace.git_commit(plain, "x") is None
+    assert workspace.git_commit(plain, "x", ["a"]) is None
+
+
+def test_git_commit_stages_only_the_given_paths(git_repo):
+    # The agent changed agent.py; a user edited user.py "elsewhere" (e.g. while a
+    # review run was suspended). Only agent.py must be committed (the review BLOCKER).
+    (git_repo / "agent.py").write_text("# by the agent\n", encoding="utf-8")
+    (git_repo / "user.py").write_text("# by a human\n", encoding="utf-8")
+    h = workspace.git_commit(git_repo, "agent change", ["agent.py"])
+    assert h is not None
+    assert not workspace.git_is_clean(git_repo)  # user.py is still uncommitted
+    import subprocess
+    committed = subprocess.run(
+        ["git", "-C", str(git_repo), "show", "--name-only", "--pretty=", "HEAD"],
+        capture_output=True, text=True,
+    ).stdout.split()
+    assert committed == ["agent.py"]  # user.py was NOT swept in
