@@ -150,6 +150,8 @@ def test_review_run_suspends_then_resume_approve_finalizes(database, tmp_path, m
     assert len(outs) == 1 and "one" in outs[0].content
     assert (tmp_path / "digest-2026-06-07.md").exists()  # local file written on finalize
     assert sent == [FAKE_DIGEST]  # emailed once, on finalize
+    # Phase 11: a human-approved digest records the human_approved verdict.
+    assert db.get_run(run.id).meta["verdict"] == "human_approved"
 
 
 def test_resume_run_rejects_non_awaiting(database, tmp_path):
