@@ -159,7 +159,8 @@
   - ✅ **10c** 多 agent 对话(coder + 自动 reviewer):coder 与一个走 llm 接缝(只读 diff、无工具、无新安全面)的自动 reviewer **有界来回**(`max_review_rounds`,默认 opt-in 关 → 运行时逐字节不变);reviewer approve 或给反馈让 coder 再改,收敛后人审最后拍板。verdict 进 `runs.meta` + 审核 payload。496 测试,40-agent 对抗评审 0 缺陷。真 E2E + 合并待用户。
   - ✅ **10b-2 后段(commit 自动化)**:成功/批准的 coding run 由 worker 在沙箱外 `git_commit`(opt-in `CODING_AUTO_COMMIT` 默认关 → 逐字节不变;只 stage agent 改的文件,不 `add -A`,审核挂起期间用户改的别的文件绝不混入;best-effort 永不拖垮 run;`--no-verify`、列表式无注入;短哈希进 runs.meta + RunDetail)。29-agent 对抗评审抓到并修了"resume-approve 误提交用户文件"的 BLOCKER。**PR/push 延后**(需 GitHub 认证+网络+对外发布)。503 测试。
   - ✅ **env 擦除子进程级**(原前置债已清,2026-06-12):`_scrubbed_env()`(进程级 pop/restore os.environ,靠单串行 worker 撑)→ `_secret_overlay()`(只读 os.environ,把密钥覆写为 `""`,经 options.env 注入 → SDK `{**os.environ, **options.env}` 合并使子进程见空值,绝不动共享 env)。并发安全不再依赖单 worker 不变量;同 denylist,覆盖零变化。28-agent 评审 0 缺陷 + 真 SDK E2E(植入假密钥+保留真 DATABASE_URL,沙箱 agent 回显 `SMTP=[] SECRET=[] DB=[]` 全空且 run 成功=订阅认证未坏)。503 测试。
-  - ⬜ 10b-2 后段余项(网络细粒度放行、push/PR)· 10b-3(会话生命周期 UI)
+  - ✅ **网络细粒度放行**(2026-06-12):coding 沙箱从全网络拒 → 可选 `CODING_ALLOWED_DOMAINS`(运维 env,逗号分隔)→ `sandbox.network.allowedDomains`。**默认空=逐字节全拒不变**;白名单**排他**(只放行列出的域,其余仍拒)。**安全边界**:只来自运维 Config,绝不来自 WorkflowDef params(否则可编辑数据能拓宽出口=提权);和 env 擦除互补(出口开了但沙箱里没密钥可外泄)。24-agent 评审 0 缺陷 + 真 SDK E2E(白名单=example.com:`ALLOWED CODE=200` / `DENIED 403 BLOCKED`)。509 测试。
+  - ⬜ 10b-2 后段余项(push/PR——用户暂不需要)· 10b-3(会话生命周期 UI)· Agents 页主从布局(可选 UI)
 - 🔨 **(小项,非 phase)Mac-as-server**:已建(deploy/ 的 launchd user agents:worker 带 caffeinate + API 于 127.0.0.1:8400,Tailscale 远程方案见 deploy/README)——**安装 = 用户跑一次 `deploy/install.sh`**(自启动服务的开关留给人)。上云推迟。
 - ✅ **Phase 11(可观测性)** — 工作流可视化 + 运行时监控:每个工作流可展开看**拓扑图**(节点/边/分支/循环,前端手绘 SVG);运行时引擎逐节点发事件(`run_node_events`,opt-in 经 contextvar、离线无影响),`GET /runs/:id/progress` 暴露,RunDetail 用同一张图**实时点亮**节点(running/done/failed,跑动时 ● live)。兑现决策表 Event 行 + 北极星的"监控运行"。
 - (浏览器 / 社媒 agent:按需插入,先过 ToS 合规。)
