@@ -422,7 +422,8 @@ def _run_coding_pipeline(
         extra = {"coding_fn": coding_fn} if coding_fn is not None else {}
         result = build_coding(
             task, workspace_dir, model=cfg.model, wf=wf_arg,
-            auto_review=cfg.coding_auto_review, **_coding_bounds(wf), **extra,
+            auto_review=cfg.coding_auto_review,
+            allowed_domains=cfg.coding_allowed_domains, **_coding_bounds(wf), **extra,
         )
     except Exception as exc:
         log.exception("run %s failed", run.id)
@@ -996,7 +997,8 @@ def _run_coding_review_claimed(
         with _checkpointer_cm(checkpointer) as cp:
             outcome = start_coding_review_run(
                 task, workspace_dir, model=cfg.model, thread_id=run.id, checkpointer=cp,
-                wf=wf_arg, auto_review=cfg.coding_auto_review, **_coding_bounds(wf), **extra,
+                wf=wf_arg, auto_review=cfg.coding_auto_review,
+                allowed_domains=cfg.coding_allowed_domains, **_coding_bounds(wf), **extra,
             )
         return _apply_coding_outcome(run, outcome, cfg, now)
     except Exception as exc:

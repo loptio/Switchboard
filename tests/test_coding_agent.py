@@ -202,6 +202,30 @@ def test_build_options_enables_sandbox_and_denies_network(tmp_path):
     assert opts.cwd == str(tmp_path) and opts.add_dirs == []
 
 
+def test_build_options_curated_network_allowlist(tmp_path):
+    # an OPERATOR allowlist opens exactly those domains; the rest of the sandbox is intact
+    opts = C._build_options(
+        "sys", tmp_path, model="m", tools=C.DEFAULT_CODING_TOOLS,
+        max_turns=12, max_tool_calls=40, max_budget_usd=1.0, counter={"n": 0},
+        allowed_domains=("pypi.org", "files.pythonhosted.org"),
+    )
+    assert opts.sandbox["network"] == {"allowedDomains": ["pypi.org", "files.pythonhosted.org"]}
+    assert opts.sandbox["enabled"] is True and opts.sandbox["allowUnsandboxedCommands"] is False
+
+
+def test_build_options_empty_allowlist_omits_network_byte_for_byte(tmp_path):
+    # the default (no allowlist) must produce the SAME sandbox dict as before the feature
+    default = _opts(tmp_path).sandbox
+    explicit_empty = C._build_options(
+        "sys", tmp_path, model="m", tools=C.DEFAULT_CODING_TOOLS,
+        max_turns=12, max_tool_calls=40, max_budget_usd=1.0, counter={"n": 0},
+        allowed_domains=(),
+    ).sandbox
+    assert default == explicit_empty == {
+        "enabled": True, "allowUnsandboxedCommands": False, "excludedCommands": [],
+    }
+
+
 def test_build_options_makes_bash_available_and_bounds_command_timeout(tmp_path):
     opts = _opts(tmp_path)
     assert "Bash" in opts.tools  # available to the model

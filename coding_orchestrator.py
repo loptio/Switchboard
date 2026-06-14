@@ -88,6 +88,7 @@ class _State(TypedDict):
     max_turns: int
     max_tool_calls: int
     max_budget_usd: float | None
+    allowed_domains: tuple[str, ...]  # curated network allowlist (operator config; () = deny)
     result: dict | None  # serialized CodingResult — the answer
     review: bool  # human-in-the-loop gate on? (U2; default False)
     approved: bool  # has the human approved the diff? (U2)
@@ -115,6 +116,7 @@ def _coding_node(state: _State, config) -> dict:
         max_tool_calls=state["max_tool_calls"],
         max_budget_usd=state["max_budget_usd"],
         feedback=state.get("feedback"),
+        allowed_domains=tuple(state.get("allowed_domains") or ()),
     )
     log.info("coding node produced status=%s", getattr(result, "status", "?"))
     rd = _result_to_dict(result)
@@ -302,6 +304,7 @@ def _initial_state(
     review: bool = False,
     auto_review: bool = False,
     max_review_rounds: int = DEFAULT_MAX_REVIEW_ROUNDS,
+    allowed_domains: tuple[str, ...] = (),
 ) -> _State:
     return {
         "task": task,
@@ -311,6 +314,7 @@ def _initial_state(
         "max_turns": max_turns,
         "max_tool_calls": max_tool_calls,
         "max_budget_usd": max_budget_usd,
+        "allowed_domains": tuple(allowed_domains),
         "result": None,
         "review": review,
         "approved": False,
@@ -332,6 +336,7 @@ def build_coding(
     reviewer_fn: Callable[..., dict] = review_coding,
     auto_review: bool = False,
     max_review_rounds: int = DEFAULT_MAX_REVIEW_ROUNDS,
+    allowed_domains: tuple[str, ...] = (),
     wf: WorkflowDef | None = None,
 ) -> CodingResult:
     """Produce a CodingResult by running the coding graph through the engine.
@@ -352,6 +357,7 @@ def build_coding(
             task, workspace, model,
             max_turns=max_turns, max_tool_calls=max_tool_calls, max_budget_usd=max_budget_usd,
             auto_review=auto_review, max_review_rounds=max_review_rounds,
+            allowed_domains=allowed_domains,
         ),
         config=config,
     )
@@ -418,6 +424,7 @@ def start_coding_review_run(
     reviewer_fn: Callable[..., dict] = review_coding,
     auto_review: bool = False,
     max_review_rounds: int = DEFAULT_MAX_REVIEW_ROUNDS,
+    allowed_domains: tuple[str, ...] = (),
     wf: WorkflowDef | None = None,
 ) -> CodingReviewOutcome:
     """Run the coding graph with the human diff-review gate ON, persisting to
@@ -430,6 +437,7 @@ def start_coding_review_run(
             task, workspace, model,
             max_turns=max_turns, max_tool_calls=max_tool_calls, max_budget_usd=max_budget_usd,
             review=True, auto_review=auto_review, max_review_rounds=max_review_rounds,
+            allowed_domains=allowed_domains,
         ),
         config=_coding_config(thread_id, coding_fn, reviewer_fn, max_review_rounds),
     )

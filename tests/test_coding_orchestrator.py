@@ -31,6 +31,7 @@ class _FakeSeam:
             "task": task, "workspace": workspace, "model": model,
             "max_turns": max_turns, "max_tool_calls": max_tool_calls,
             "max_budget_usd": max_budget_usd, "feedback": feedback,
+            "allowed_domains": kw.get("allowed_domains"),
         })
         return self.result
 
@@ -66,6 +67,21 @@ def test_build_coding_defaults_match_coding_def_params():
     assert call["max_turns"] == CODING_DEF.params["max_turns"]
     assert call["max_tool_calls"] == CODING_DEF.params["max_tool_calls"]
     assert call["max_budget_usd"] == CODING_DEF.params["max_budget_usd"]
+
+
+def test_build_coding_threads_the_network_allowlist_to_the_seam():
+    seam = _FakeSeam(_result())
+    CO.build_coding(
+        "t", "/tmp/ws", model="m", coding_fn=seam,
+        allowed_domains=("pypi.org", "files.pythonhosted.org"),
+    )
+    assert seam.calls[0]["allowed_domains"] == ("pypi.org", "files.pythonhosted.org")
+
+
+def test_build_coding_defaults_to_no_network_allowlist():
+    seam = _FakeSeam(_result())
+    CO.build_coding("t", "/tmp/ws", model="m", coding_fn=seam)
+    assert seam.calls[0]["allowed_domains"] == ()  # deny-all by default
 
 
 def test_build_coding_passes_through_stopped_limit():

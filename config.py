@@ -47,6 +47,12 @@ class Config:
     coding_auto_review: bool = False
     # Phase 10b-2: opt-in auto-commit of a SUCCESSFUL coding run's diff (default off).
     coding_auto_commit: bool = False
+    # Phase 10b-2 (network): OPERATOR-curated domain allowlist the coding sandbox may
+    # reach (e.g. pypi.org, files.pythonhosted.org, registry.npmjs.org). Empty = the
+    # current full network DENY. This is a SECURITY policy → operator env ONLY, never a
+    # WorkflowDef param (a def is editable data — letting it widen the allowlist would be
+    # privilege escalation).
+    coding_allowed_domains: tuple[str, ...] = ()
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -54,6 +60,14 @@ def _bool_env(name: str, default: bool = False) -> bool:
     if not raw:
         return default
     return raw in ("1", "true", "yes", "on")
+
+
+def _csv_env(name: str) -> tuple[str, ...]:
+    """Read a comma-separated env var into a tuple of trimmed, non-empty entries.
+    Unset/blank → empty tuple. Order preserved, duplicates kept (harmless for a domain
+    allowlist; the SDK de-dups)."""
+    raw = os.getenv(name) or ""
+    return tuple(part for part in (p.strip() for p in raw.split(",")) if part)
 
 
 def _positive_int(name: str, default: int) -> int:
@@ -81,4 +95,5 @@ def load_config() -> Config:
         coding_workspace=Path(os.getenv("CODING_WORKSPACE", DEFAULT_CODING_WORKSPACE)),
         coding_auto_review=_bool_env("CODING_AUTO_REVIEW", False),
         coding_auto_commit=_bool_env("CODING_AUTO_COMMIT", False),
+        coding_allowed_domains=_csv_env("CODING_ALLOWED_DOMAINS"),
     )

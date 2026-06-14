@@ -316,16 +316,30 @@ def _build_options(
     max_tool_calls: int,
     max_budget_usd: float | None,
     counter: dict,
+    allowed_domains: tuple[str, ...] = (),
 ) -> ClaudeAgentOptions:
     """Assemble the ClaudeAgentOptions for one bounded, SANDBOXED coding run.
 
     PURE wiring — no SDK call — so the sandbox / Bash / timeout configuration is
     unit-testable offline without the SDK (the real CONTAINMENT is an OS mechanism,
     verified hands-on). The sandbox (`sandbox=...`) is the system's BORROWED isolation
-    (Seatbelt/bubblewrap): filesystem locked to the workspace, network denied
-    (no `allowedDomains`), and no command may escape it (`allowUnsandboxedCommands` False,
-    `excludedCommands` empty). Per-command timeouts ride env vars the bundled CLI honours.
+    (Seatbelt/bubblewrap): filesystem locked to the workspace, no command may escape it
+    (`allowUnsandboxedCommands` False, `excludedCommands` empty).
+
+    NETWORK: denied by default. `allowed_domains` (OPERATOR config, never workflow data)
+    opens a CURATED allowlist — when non-empty the sandbox gets a `network.allowedDomains`;
+    when empty the `network` key is OMITTED ENTIRELY, byte-for-byte the prior full-deny.
+    Per-command timeouts ride env vars the bundled CLI honours.
     """
+    sandbox: dict = {
+        "enabled": True,
+        "allowUnsandboxedCommands": False,  # no command may bypass the sandbox
+        "excludedCommands": [],  # nothing runs outside it (not even git/docker)
+        # no "network" key -> network DENIED by default (decision E)
+    }
+    if allowed_domains:
+        # Curated egress: only these domains are reachable; everything else stays denied.
+        sandbox["network"] = {"allowedDomains": list(allowed_domains)}
     return ClaudeAgentOptions(
         system_prompt=full_system_prompt,
         model=model,
@@ -341,13 +355,9 @@ def _build_options(
         cwd=str(root),  # the agent's working directory IS the workspace
         add_dirs=[],  # nothing outside the workspace is reachable
         setting_sources=[],  # ignore project/user settings for a clean run (mirror llm.py)
-        # Phase 10b-2 — borrowed OS sandbox for COMMANDS (Seatbelt/bubblewrap):
-        sandbox={
-            "enabled": True,
-            "allowUnsandboxedCommands": False,  # no command may bypass the sandbox
-            "excludedCommands": [],  # nothing runs outside it (not even git/docker)
-            # no "allowedDomains" -> network DENIED by default (decision E)
-        },
+        # Phase 10b-2 — borrowed OS sandbox for COMMANDS (Seatbelt/bubblewrap), with the
+        # optional curated network allowlist assembled above.
+        sandbox=sandbox,
         # Phase 10b-2 — the per-command bash timeouts (decision D) PLUS the secret scrub:
         # `_secret_overlay()` overrides every worker secret to "" in options.env, which the
         # SDK merges OVER os.environ — so the sandboxed bash inherits empty secrets, not the
@@ -387,14 +397,16 @@ def run_coding_agent(
     max_budget_usd: float | None = 1.0,
     system_prompt: str | None = None,
     feedback: str | None = None,
+    allowed_domains: tuple[str, ...] = (),
 ) -> CodingResult:
     """Run ONE bounded, workspace-confined coding-agent loop; return a CodingResult.
 
     The synchronous wrapper over the async SDK stream (callers — the coding family —
     stay plain sync code, like llm.complete). Snapshots the workspace before/after and
     returns the unified diff. `feedback` (U2 human redo) is appended to the task.
-    Callers inject a fake with this signature for offline runs; the real SDK runs only
-    in a metered E2E.
+    `allowed_domains` (operator config) is the curated network allowlist; empty = network
+    denied. Callers inject a fake with this signature for offline runs; the real SDK runs
+    only in a metered E2E.
     """
     root = Path(workspace_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -417,6 +429,7 @@ def run_coding_agent(
         full_system_prompt, root,
         model=model, tools=tools, max_turns=max_turns,
         max_tool_calls=max_tool_calls, max_budget_usd=max_budget_usd, counter=counter,
+        allowed_domains=allowed_domains,
     )
     try:
         # The worker's secrets are neutralised SUBPROCESS-level via options.env
